@@ -70,7 +70,12 @@ class _GridDensity:
                     'density for a block it was not computed on')
             return rho
 
-        rho = numpy.asarray(self.evaluator(coords))
+        # Keep the density on whichever backend produced it. Calling
+        # numpy.asarray here would raise on cupy: "Implicit conversion to a
+        # NumPy array is not allowed."
+        rho = self.evaluator(coords)
+        if not hasattr(rho, 'ndim'):
+            rho = numpy.asarray(rho)
         if rho.ndim == 1:
             rho = rho[None, :]
         if rho.shape[0] not in (1, 4, 5):
