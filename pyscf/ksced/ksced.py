@@ -281,20 +281,56 @@ def _check_numint(mf):
             'without multigrid acceleration.')
 
 
-def embed(mf, mf_b, dm_b=None, mol_ab=None):
+def _looks_supermolecular(mol_a, mol_b):
+    '''True when A and B were built in one shared basis with ghost atoms.
+
+    Keys on nao equality and identical geometry. An extended-MB cell -- A's
+    atoms plus a few of B's as ghosts -- never satisfies nao_a == nao_b, so this
+    guard does not close the door on that.
+    '''
+    if mol_a.nao != mol_b.nao:
+        return False
+    if mol_a.natm != mol_b.natm:
+        return False
+    return numpy.allclose(mol_a.atom_coords(), mol_b.atom_coords())
+
+
+def _check_mb_preconditions(mf, mf_b):
+    '''Periodic MB needs A, B and B's converged run on one lattice and mesh.'''
+    if not _is_pbc(mf):
+        return
+    cell_a, cell_b = mf.mol, mf_b.mol
+    if not numpy.allclose(cell_a.lattice_vectors(), cell_b.lattice_vectors()):
+        raise ValueError(
+            'KSCED monomolecular basis: cell_a and cell_b must share a lattice')
+    if not numpy.array_equal(cell_a.mesh, cell_b.mesh):
+        raise ValueError(
+            'KSCED monomolecular basis: cell_a.mesh %r and cell_b.mesh %r '
+            'differ, so their uniform grids are not the same points'
+            % (tuple(cell_a.mesh), tuple(cell_b.mesh)))
+
+
+def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
+          _bypass_sb_guard=False):
     '''Attach a frozen KSCED environment to a restricted KS object.
 
     Args:
-        mf : RKS object for subsystem A, built in the supermolecular basis with
-            ghost atoms on B.
-        mf_b : converged RKS object for subsystem B, built in the same
-            supermolecular basis with ghost atoms on A.
+        mf : RKS object for subsystem A.
+        mf_b : converged RKS object for subsystem B.
 
     Kwargs:
         dm_b : density matrix for B. Defaults to mf_b.make_rdm1().
-        mol_ab : Mole or Cell for the whole system. When given, the A-B nuclear
-            repulsion is included in e_tot, making e_tot the complete embedded
-            energy and Eint a plain three-term subtraction.
+        mol_ab : Mole or Cell for the whole system. In 'S' mode this is optional
+            and, when given, folds the A-B nuclear repulsion into e_tot. In 'M'
+            mode it is built automatically from mf.mol and mf_b.mol and is
+            always included; pass it only to override.
+        basis_mode : 'S' for the supermolecular basis, where A and B share one
+            AO basis built with ghost atoms. 'M' for the monomolecular basis,
+            where A carries only A's functions and B only B's -- which is what
+            makes the embedded SCF smaller than the whole system.
+        _bypass_sb_guard : test hook. Lets the 'M' machinery run on ghost-built
+            cells so that it can be compared against the 'S' path. Never set in
+            production code.
 
     Returns:
         A new object whose class derives from both the KSCED mixin and the class
@@ -303,17 +339,42 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None):
     from pyscf.ksced import rks as ksced_rks
     from pyscf.ksced import pbcrks as ksced_pbcrks
 
-    env = _FrozenEnv(mf_b, dm_b)
+    if basis_mode not in ('S', 'M'):
+        raise ValueError(
+            "basis_mode must be 'S' (supermolecular) or 'M' (monomolecular); "
+            "got %r" % (basis_mode,))
 
-    if isinstance(mf, _KSCED):
-        mf.with_env = env
-        mf.mol_ab = mol_ab
-        return mf
+    if basis_mode == 'S':
+        env = _FrozenEnv(mf_b, dm_b)
+        if isinstance(mf, _KSCED):
+            mf.with_env = env
+            mf.mol_ab = mol_ab
+            return mf
+        _check_numint(mf)
+        base = ksced_pbcrks.KSCEDPBCRKS if _is_pbc(mf) else ksced_rks.KSCEDRKS
+        obj = base(mf, env, mol_ab)
+    else:
+        from pyscf.ksced.mb import rks as mb_rks
+        from pyscf.ksced.mb import pbcrks as mb_pbcrks
+        from pyscf.ksced.mb.env import _FrozenEnvMB
 
-    _check_numint(mf)
-    base = ksced_pbcrks.KSCEDPBCRKS if _is_pbc(mf) else ksced_rks.KSCEDRKS
+        if not _bypass_sb_guard and _looks_supermolecular(mf.mol, mf_b.mol):
+            raise ValueError(
+                "basis_mode='M' was given cells that share one basis: A and B "
+                "have the same nao and the same geometry, which is the "
+                "supermolecular (ghost-atom) construction. Build A from A's "
+                "atoms only and B from B's only, or use basis_mode='S'.")
+        _check_mb_preconditions(mf, mf_b)
 
-    obj = base(mf, env, mol_ab)
+        env = _FrozenEnvMB(mf_b, mf.mol, dm_b, mol_ab)
+        if isinstance(mf, _KSCED):
+            mf.with_env = env
+            mf.mol_ab = env.mol_ab
+            return mf
+        _check_numint(mf)
+        base = mb_pbcrks.KSCEDMBPBCRKS if _is_pbc(mf) else mb_rks.KSCEDMBRKS
+        obj = base(mf, env, env.mol_ab)
+
     # The synthesised class must not reuse the mixin's name, or the MRO reads
     # "KSCEDRKS <- KSCEDRKS" and tracebacks become ambiguous. pyscf.solvent
     # avoids this the same way, by naming from the component rather than the mixin.

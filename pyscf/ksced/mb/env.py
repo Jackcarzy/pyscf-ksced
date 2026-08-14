@@ -51,9 +51,28 @@ class _FrozenEnvMB:
             dm_b = mf_b.make_rdm1()
         self.dm_b = dm_b
 
-        self.mol_ab = mol_ab if mol_ab is not None else _conc(mol_a, self.mol_b)
         self.nao_a = mol_a.nao
         self.nao_b = self.mol_b.nao
+
+        # mol_ab means something different here than it does in the
+        # supermolecular path. There it is the real whole system, supplied only
+        # so E_nn[AB] can be added. Here every cross term is a *slice* of a
+        # matrix built at the AB dimension, so it must be the concatenation
+        # A (+) B, with nao_a + nao_b functions and A's block first.
+        #
+        # E_nn is unaffected by the difference: ghost centres carry no charge,
+        # so conc(mol_a, mol_b).energy_nuc() equals the real system's.
+        if mol_ab is None:
+            mol_ab = _conc(mol_a, self.mol_b)
+        elif mol_ab.nao != self.nao_a + self.nao_b:
+            raise ValueError(
+                'KSCED monomolecular basis: mol_ab has nao %d, but the cross '
+                'terms are slices of an A(+)B build and need nao_a + nao_b = '
+                '%d + %d = %d. Omit mol_ab and it will be concatenated '
+                'correctly; pass one only to override the concatenation itself.'
+                % (mol_ab.nao, self.nao_a, self.nao_b,
+                   self.nao_a + self.nao_b))
+        self.mol_ab = mol_ab
         self.reset()
 
     def reset(self):
