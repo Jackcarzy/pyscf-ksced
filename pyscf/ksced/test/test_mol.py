@@ -35,6 +35,31 @@ class KnownValues(unittest.TestCase):
         again = ksced.embed(mf_a, mf_b)
         self.assertIs(again.__class__, mf_a.__class__)
 
+    def test_embed_rejects_environment_without_a_density(self):
+        """An unconverged mf_b must fail with a clear message, not a TypeError
+        raised deep inside pyscf.scf.hf.make_rdm1."""
+        mol_a, mol_b = _null_partition()
+        mf_b = dft.RKS(mol_b, xc='PBE')          # never run
+        with self.assertRaises(ValueError) as caught:
+            ksced.embed(dft.RKS(mol_a, xc='PBE'), mf_b)
+        self.assertIn('kernel', str(caught.exception))
+
+    def test_explicit_dm_b_bypasses_the_convergence_check(self):
+        mol_a, mol_b = _null_partition()
+        mf_b = dft.RKS(mol_b, xc='PBE')          # never run
+        dm_b = numpy.zeros((mol_b.nao, mol_b.nao))
+        mf_a = ksced.embed(dft.RKS(mol_a, xc='PBE'), mf_b, dm_b=dm_b)
+        self.assertEqual(mf_a.with_env.dm_b.shape, (mol_b.nao, mol_b.nao))
+
+    def test_mro_names_are_unambiguous(self):
+        """lib.set_class synthesises a class; its name must not collide with the
+        mixin's, or tracebacks show the same name twice in a row."""
+        mol_a, mol_b = _null_partition()
+        mf_b = dft.RKS(mol_b, xc='PBE').run()
+        mf_a = ksced.embed(dft.RKS(mol_a, xc='PBE'), mf_b)
+        names = [k.__name__ for k in type(mf_a).__mro__]
+        self.assertEqual(len(names), len(set(names)), 'duplicate names in MRO: %s' % names)
+
     def test_energy_nuc_includes_cross_term_when_mol_ab_given(self):
         common = dict(basis='sto-3g', verbose=0)
         mol_ab = gto.M(atom='Li 0 0 0; O 0 0 1.5; H 0 0.76 2.09; H 0 -0.76 2.09',

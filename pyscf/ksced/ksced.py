@@ -34,7 +34,16 @@ class _FrozenEnv:
     def __init__(self, mf_b, dm_b=None):
         self.mf_b = mf_b
         self.mol_b = mf_b.mol
-        self.dm_b = mf_b.make_rdm1() if dm_b is None else dm_b
+        if dm_b is None:
+            if getattr(mf_b, 'mo_coeff', None) is None or getattr(mf_b, 'mo_occ', None) is None:
+                raise ValueError(
+                    'subsystem B has no density matrix. Call mf_b.kernel() before '
+                    'embed(), or pass an explicit dm_b.')
+            if not getattr(mf_b, 'converged', True):
+                logger.warn(mf_b, 'KSCED: subsystem B is not converged; the frozen '
+                                  'density is taken from an unconverged calculation')
+            dm_b = mf_b.make_rdm1()
+        self.dm_b = dm_b
         self.reset()
 
     def reset(self):
@@ -201,5 +210,8 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None):
     base = ksced_pbcrks.KSCEDPBCRKS if _is_pbc(mf) else ksced_rks.KSCEDRKS
 
     obj = base(mf, env, mol_ab)
-    name = 'KSCED' + mf.__class__.__name__
+    # The synthesised class must not reuse the mixin's name, or the MRO reads
+    # "KSCEDRKS <- KSCEDRKS" and tracebacks become ambiguous. pyscf.solvent
+    # avoids this the same way, by naming from the component rather than the mixin.
+    name = mf.__class__.__name__ + 'WithKSCED'
     return lib.set_class(obj, (base, mf.__class__), name)
