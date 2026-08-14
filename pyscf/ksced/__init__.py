@@ -8,4 +8,6 @@ have the same dimension.
 
 __version__ = '0.1.0'
 
+from pyscf.ksced.ksced import embed
+
 __all__ = ['embed']
