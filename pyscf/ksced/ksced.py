@@ -54,43 +54,30 @@ def _tag_array(a, **tags):
     return lib.tag_array(a, **tags)
 
 
-def _vne_of(mol, with_df=None, kpt=None):
-    '''Nuclear-electron attraction matrix for mol, pseudopotential and PBC aware.
-
-    Mirrors what the corresponding get_hcore builds, so that V_ne[B] evaluated
-    here is consistent with the V_ne[A] already inside get_hcore.
-
-    Kwargs:
-        with_df : density fitting object to reuse for a periodic system. A fresh
-            FFTDF is built when it is not given.
-        kpt : single k-point, periodic systems only. It must be passed as a
-            shape (3,) vector: fft.get_pp falls back to mydf.kpts when given
-            None, and that is shape (1,3), which makes it return a k-point
-            *list* of matrices, shape (1,nao,nao). Adding that to a (nao,nao)
-            core Hamiltonian silently broadcasts and breaks energy_elec.
-    '''
+def _kinetic_of(mol, kpt=None):
+    """Kinetic-energy matrix. Basis-only, so A and B share it."""
     if _is_cell(mol):
-        from pyscf.pbc.df import fft
-        # get_pp/get_nuc below are the CPU implementations and drive the density
-        # fitting object through aoR_loop. A GPU4PySCF FFTDF does not provide it,
-        # so fall back to building a CPU one over the same cell. V_ne is a fixed
-        # one-electron matrix, so evaluating it on the host costs nothing that
-        # matters and keeps the result a plain ndarray, which is what GPU4PySCF's
-        # own get_hcore returns too.
-        if with_df is None or not hasattr(with_df, 'aoR_loop'):
-            with_df = fft.FFTDF(mol)
         if kpt is None:
             kpt = numpy.zeros(3)
-        getter = fft.get_pp if mol._pseudo else fft.get_nuc
-        return getter(with_df, kpt)
+        return mol.pbc_intor('int1e_kin', hermi=1, kpts=kpt)
+    return mol.intor_symmetric('int1e_kin')
 
-    if mol._pseudo:
-        vne = gto.pp_int.get_gth_pp(mol)
+
+def _vne_from_hcore(mf, mol, kpt=None):
+    """V_ne = hcore - T, taken from the backend's own get_hcore.
+
+    Computing V_ne independently is a trap. PySCF builds it from the density
+    fitting object (FFTDF), while GPU4PySCF's get_hcore switches to
+    MultiGridNumInt whenever prod(cell.mesh) < 500**3 -- which is every system
+    here. Deriving V_ne[B] from the same get_hcore that produced V_ne[A]
+    guarantees the two are computed by the same method on whichever backend is
+    in use, which is what the embedding energy expression assumes.
+    """
+    if _is_cell(mol):
+        h1e = mf.get_hcore(mol, kpt)
     else:
-        vne = mol.intor_symmetric('int1e_nuc')
-    if len(mol._ecpbas) > 0:
-        vne = vne + mol.intor_symmetric('ECPscalar')
-    return vne
+        h1e = mf.get_hcore(mol)
+    return h1e - _as_like(h1e, _kinetic_of(mol, kpt))
 
 
 class _FrozenEnv:
@@ -125,12 +112,9 @@ class _FrozenEnv:
         return self
 
     def get_vne_b(self, mol, kpt=None):
-        '''V_ne[B] in the shared AO basis.'''
+        '''V_ne[B] in the shared AO basis, from B's own get_hcore.'''
         if self._vne_b is None:
-            # Reuse B's own density fitting object for a periodic system, so the
-            # mesh matches the one B was converged with.
-            self._vne_b = _vne_of(self.mol_b,
-                                  getattr(self.mf_b, 'with_df', None), kpt)
+            self._vne_b = _vne_from_hcore(self.mf_b, self.mol_b, kpt)
         return self._vne_b
 
     def get_j_b(self, mf, mol):
@@ -167,11 +151,14 @@ class _FrozenEnv:
                                        kpt, None, max_memory=max_memory)[1]
         return self._e_tnad_b
 
-    def e_vne_a_rho_b(self, mol_a, with_df=None, kpt=None):
-        '''<V_ne[A] | rho_B>, a constant of the embedded SCF.'''
+    def e_vne_a_rho_b(self, vne_a):
+        '''<V_ne[A] | rho_B>, a constant of the embedded SCF.
+
+        vne_a is supplied by the mixin, which is the only place with access to
+        the unmodified get_hcore for subsystem A.
+        '''
         if self._e_vne_a_rho_b is None:
-            self._e_vne_a_rho_b = _trace_prod(_vne_of(mol_a, with_df, kpt),
-                                              self.dm_b)
+            self._e_vne_a_rho_b = _trace_prod(vne_a, self.dm_b)
         return self._e_vne_a_rho_b
 
 
@@ -236,9 +223,7 @@ class KSCEDMixin(_KSCED):
         # Constant: the A nuclei attracting the frozen B electrons. For a
         # periodic system, reuse A's own density fitting object so the mesh
         # matches the one the SCF runs on.
-        e_vne_a_rho_b = env.e_vne_a_rho_b(self.mol,
-                                          getattr(self, 'with_df', None),
-                                          getattr(self, 'kpt', None))
+        e_vne_a_rho_b = env.e_vne_a_rho_b(self._vne_a())
         # The second half of J_AB. get_veff already contributed the first half
         # through ecoul = 0.5 * <dm_a | J[rho_total]>.
         e_coul_ab_half = _trace_prod(env.get_j_b(self, self.mol), dm) * .5
@@ -247,6 +232,16 @@ class KSCEDMixin(_KSCED):
         self.scf_summary['ksced_coul_ab_half'] = e_coul_ab_half
         return (e_tot_elec + e_vne_a_rho_b + e_coul_ab_half,
                 e2 + e_coul_ab_half)
+
+    def _vne_a(self):
+        """V_ne[A] from the unmodified get_hcore, i.e. without vne_b."""
+        kpt = getattr(self, 'kpt', None)
+        mol = self.mol
+        if _is_cell(mol):
+            h1e = super().get_hcore(mol, kpt)
+        else:
+            h1e = super().get_hcore(mol)
+        return h1e - _as_like(h1e, _kinetic_of(mol, kpt))
 
     def reset(self, mol=None):
         self.with_env.reset()
