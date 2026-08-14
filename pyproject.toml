@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pyscf-ksced"
+version = "0.1.0"
+description = "KSCED subsystem embedding for PySCF"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "Apache-2.0"}
+dependencies = ["pyscf>=2.5", "numpy>=1.13"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+# pyscf/ has no __init__.py: it extends the pyscf namespace package.
+[tool.setuptools.packages.find]
+include = ["pyscf*"]
+namespaces = true
