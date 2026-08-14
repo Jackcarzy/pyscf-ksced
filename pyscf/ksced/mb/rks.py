@@ -91,8 +91,17 @@ class KSCEDMBRKS(KSCEDMBMixin):
         # Exchange-correlation at the total density; rho_B is added on the grid.
         # n counts N_A + N_B because the offset numint integrates rho_t; it is
         # reported separately and never returned to the stock grid warning.
-        n, exc_t, vxc = ni_t.nr_rks(mol, self.grids, self.xc, dm_a,
-                                    max_memory=max_memory)
+        #
+        # A backend whose nr_rks bypasses the density hooks can either return a
+        # wrong energy silently or crash on an unrelated-looking shape error;
+        # both routes must end in the same named refusal, so the guard runs on
+        # the exception path too.
+        try:
+            n, exc_t, vxc = ni_t.nr_rks(mol, self.grids, self.xc, dm_a,
+                                        max_memory=max_memory)
+        except Exception as exc:
+            self._assert_env_density_entered(cause=exc)
+            raise
         self._assert_env_density_entered()
         self._log_electron_counts(n)
         # Non-additive kinetic energy: T[rho] - T[rho_A] - T[rho_B].

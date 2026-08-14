@@ -33,20 +33,25 @@ class KSCEDMBMixin(KSCEDMixin):
                     'KSCED monomolecular basis supports LDA and GGA only; '
                     '%s is %s' % (code, ni._xc_type(code)))
 
-    def _assert_env_density_entered(self):
+    def _assert_env_density_entered(self, cause=None):
         '''Fail loudly if the frozen density never reached the functional.
 
-        The offset numint adds rho_B inside whichever hook the live backend
-        calls. When a backend uses neither -- GPU4PySCF's *molecular* nr_rks
-        fans grid work across devices without going through ni.block_loop, and
-        has no _gen_rho_evaluator either -- nr_rks still runs to completion and
-        returns a perfectly plausible number computed from rho_A alone. Probed
-        on an H200: 0 blocks seen out of 33792 grid points, and no exception.
+        The offset numint adds rho_B inside whichever density hook the live
+        backend calls. GPU4PySCF's *molecular* nr_rks calls neither: it walks
+        ni.block_loop but computes rho inline from mo_coeff inside
+        _nr_rks_task, one thread per device, never through eval_rho or
+        _gen_rho_evaluator. Probed on an H200: nr_rks ran to completion with
+        zero density-hook calls over 33792 grid points and returned a
+        perfectly plausible number computed from rho_A alone.
 
-        A wrong energy that looks right is the worst failure available here, so
-        check that the cache actually filled rather than trusting the hook
-        fired. Behavioural rather than a backend name test, so a future backend
-        with the same structure is caught too.
+        A wrong energy that looks right is the worst failure available here,
+        so check that the rho_B cache actually filled rather than trusting a
+        hook fired. Behavioural rather than a backend name test, so a future
+        backend with the same structure is caught too.
+
+        cause is the exception raised by nr_rks itself, when there was one:
+        the same missing seam can also surface as a shape error inside the
+        wrapped loop, and that error should not mask the diagnosis.
         '''
         gd = self.with_env._griddens
         if gd is not None and gd.nblocks > 0:
@@ -55,10 +60,10 @@ class KSCEDMBMixin(KSCEDMixin):
             "KSCED basis_mode='M' cannot reach the density evaluation of %s: "
             "the environment density was never added, so the result would be "
             "subsystem A alone. This is known for GPU4PySCF's molecular "
-            "numint, whose nr_rks distributes grid blocks across devices "
-            "without calling ni.block_loop. Use the periodic GPU path, or run "
-            "molecular MB on CPU PySCF."
-            % type(self._numint).__name__)
+            "numint, whose nr_rks computes rho inline per device rather than "
+            "through eval_rho or _gen_rho_evaluator. Use the periodic GPU "
+            "path, or run molecular MB on CPU PySCF."
+            % type(self._numint).__name__) from cause
 
     def _log_electron_counts(self, n_total):
         '''The offset numint integrates rho_t, so its nelec counts N_A + N_B.
