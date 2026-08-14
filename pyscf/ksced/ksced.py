@@ -8,12 +8,35 @@ from pyscf.lib import logger
 T_NAD_DEFAULT = 'LDA_K_TF'
 
 
-def _vne_of(mol):
-    '''Nuclear-electron attraction matrix for mol, pseudopotential aware.
+def _is_cell(mol):
+    from pyscf.pbc.gto import Cell
+    return isinstance(mol, Cell)
 
-    Mirrors what pyscf.scf.hf builds for h1e, so that V_ne[B] evaluated here is
-    consistent with the V_ne[A] already inside get_hcore.
+
+def _vne_of(mol, with_df=None, kpt=None):
+    '''Nuclear-electron attraction matrix for mol, pseudopotential and PBC aware.
+
+    Mirrors what the corresponding get_hcore builds, so that V_ne[B] evaluated
+    here is consistent with the V_ne[A] already inside get_hcore.
+
+    Kwargs:
+        with_df : density fitting object to reuse for a periodic system. A fresh
+            FFTDF is built when it is not given.
+        kpt : single k-point, periodic systems only. It must be passed as a
+            shape (3,) vector: fft.get_pp falls back to mydf.kpts when given
+            None, and that is shape (1,3), which makes it return a k-point
+            *list* of matrices, shape (1,nao,nao). Adding that to a (nao,nao)
+            core Hamiltonian silently broadcasts and breaks energy_elec.
     '''
+    if _is_cell(mol):
+        from pyscf.pbc.df import fft
+        if with_df is None:
+            with_df = fft.FFTDF(mol)
+        if kpt is None:
+            kpt = numpy.zeros(3)
+        getter = fft.get_pp if mol._pseudo else fft.get_nuc
+        return getter(with_df, kpt)
+
     if mol._pseudo:
         vne = gto.pp_int.get_gth_pp(mol)
     else:
@@ -54,10 +77,13 @@ class _FrozenEnv:
         self._e_vne_a_rho_b = None
         return self
 
-    def get_vne_b(self, mol):
+    def get_vne_b(self, mol, kpt=None):
         '''V_ne[B] in the shared AO basis.'''
         if self._vne_b is None:
-            self._vne_b = _vne_of(self.mol_b)
+            # Reuse B's own density fitting object for a periodic system, so the
+            # mesh matches the one B was converged with.
+            self._vne_b = _vne_of(self.mol_b,
+                                  getattr(self.mf_b, 'with_df', None), kpt)
         return self._vne_b
 
     def get_j_b(self, mf, mol):
@@ -80,11 +106,25 @@ class _FrozenEnv:
                                        max_memory=max_memory)[1]
         return self._e_tnad_b
 
-    def e_vne_a_rho_b(self, mol_a):
+    def e_xc_pbc(self, ni, cell, grids, xc, hermi, kpt, max_memory):
+        '''E_xc[rho_B] for the periodic path.'''
+        if self._e_xc is None:
+            self._e_xc = ni.nr_rks(cell, grids, xc, self.dm_b, 0, hermi,
+                                   kpt, None, max_memory=max_memory)[1]
+        return self._e_xc
+
+    def e_tnad_b_pbc(self, ni, cell, grids, t_nad, hermi, kpt, max_memory):
+        '''T_s^TF[rho_B] for the periodic path.'''
+        if self._e_tnad_b is None:
+            self._e_tnad_b = ni.nr_rks(cell, grids, t_nad, self.dm_b, 0, hermi,
+                                       kpt, None, max_memory=max_memory)[1]
+        return self._e_tnad_b
+
+    def e_vne_a_rho_b(self, mol_a, with_df=None, kpt=None):
         '''<V_ne[A] | rho_B>, a constant of the embedded SCF.'''
         if self._e_vne_a_rho_b is None:
             self._e_vne_a_rho_b = numpy.einsum(
-                'ij,ji->', _vne_of(mol_a), self.dm_b).real
+                'ij,ji->', _vne_of(mol_a, with_df, kpt), self.dm_b).real
         return self._e_vne_a_rho_b
 
 
@@ -128,7 +168,8 @@ class KSCEDMixin(_KSCED):
     def get_hcore(self, mol=None):
         if mol is None:
             mol = self.mol
-        return super().get_hcore(mol) + self.with_env.get_vne_b(mol)
+        return super().get_hcore(mol) + self.with_env.get_vne_b(
+            mol, getattr(self, 'kpt', None))
 
     def energy_nuc(self):
         e = super().energy_nuc()
@@ -144,8 +185,12 @@ class KSCEDMixin(_KSCED):
         e_tot_elec, e2 = super().energy_elec(dm, h1e, vhf)
 
         env = self.with_env
-        # Constant: the A nuclei attracting the frozen B electrons.
-        e_vne_a_rho_b = env.e_vne_a_rho_b(self.mol)
+        # Constant: the A nuclei attracting the frozen B electrons. For a
+        # periodic system, reuse A's own density fitting object so the mesh
+        # matches the one the SCF runs on.
+        e_vne_a_rho_b = env.e_vne_a_rho_b(self.mol,
+                                          getattr(self, 'with_df', None),
+                                          getattr(self, 'kpt', None))
         # The second half of J_AB. get_veff already contributed the first half
         # through ecoul = 0.5 * <dm_a | J[rho_total]>.
         e_coul_ab_half = numpy.einsum(
