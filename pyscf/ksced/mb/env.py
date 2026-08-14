@@ -6,6 +6,8 @@ modes without modification. The environment object, not the SCF class, is the
 polymorphic seam.
 '''
 
+import copy
+
 import numpy
 from pyscf.lib import logger
 
@@ -94,16 +96,27 @@ class _FrozenEnvMB:
 
         mf_b itself cannot be asked for hcore or J on mol_ab: its density
         fitting object is built for mol_b, so a periodic FFTDF would use the
-        wrong cell. Copying and calling reset(mol) rebuilds the fitting object
-        for the right cell while keeping mf_b's class -- and therefore its
-        backend and its choice of method inside get_hcore, which is what
-        docs/architecture.md section 4 requires. mf_b is never mutated.
+        wrong cell. Copying and calling reset(mol) rebinds it while keeping
+        mf_b's class -- and therefore its backend and its choice of method
+        inside get_hcore, which is what docs/architecture.md section 4
+        requires. mf_b is never mutated.
+
+        The density fitting object must be copied too. SCF.copy() is shallow,
+        so every scratch object would otherwise share mf_b's with_df; each
+        reset() rebinds that one shared object and the last caller wins. The
+        symptom is remote from the cause: get_j on mol_ab silently builds
+        integrals for whichever cell was reset most recently, and fails on a
+        shape mismatch several frames away.
         '''
         key = id(mol)
         mf = self._mfs.get(key)
         if mf is None:
             mf = self.mf_b.copy()
+            with_df = getattr(mf, 'with_df', None)
+            if with_df is not None:
+                mf.with_df = copy.copy(with_df)
             mf.reset(mol)
+            mf._eri = None
             self._mfs[key] = mf
         return mf
 
