@@ -11,6 +11,7 @@ and the supermolecular grid are the same points.
 
 from pyscf import lib
 from pyscf.ksced.ksced import _trace_prod, _tag_array
+from pyscf.ksced.mb.arrays import like as _like
 from pyscf.ksced.mb.common import KSCEDMBMixin
 
 
@@ -62,7 +63,10 @@ class KSCEDMBPBCRKS(KSCEDMBMixin):
                                                  hermi, kpt, max_memory)
 
         # J[rho_total] in A's basis: A's own build plus the cached AB slice.
-        vj = self.get_j(cell, dm_a, hermi, kpt, None) + env.get_j_b(self, cell)
+        # The slice is cached on the host, so it has to be moved to whichever
+        # backend A's own build used before the two can be added.
+        vj_a = self.get_j(cell, dm_a, hermi, kpt, None)
+        vj = vj_a + _like(vj_a, env.get_j_b(self, cell))
         vxc += vj
 
         # Half of J_AA plus half of J_AB; energy_elec adds the other half of J_AB.

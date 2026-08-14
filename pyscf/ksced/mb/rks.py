@@ -10,6 +10,7 @@ import numpy
 
 from pyscf import dft, lib
 from pyscf.ksced.ksced import _trace_prod, _tag_array
+from pyscf.ksced.mb.arrays import like as _like
 from pyscf.ksced.mb.common import KSCEDMBMixin
 
 
@@ -106,7 +107,8 @@ class KSCEDMBRKS(KSCEDMBMixin):
                                              max_memory)
 
         # J[rho_total] in A's basis: A's own build plus the cached AB slice.
-        vj = self.get_j(mol, dm_a, hermi) + env.get_j_b(self, mol)
+        vj_a = self.get_j(mol, dm_a, hermi)
+        vj = vj_a + _like(vj_a, env.get_j_b(self, mol))
         vxc += vj
 
         # Half of J_AA plus half of J_AB; energy_elec adds the other half of J_AB.

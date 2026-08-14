@@ -20,11 +20,9 @@ import threading
 
 import numpy
 
+from pyscf.ksced.mb.arrays import to_host as _to_host
 
-def _to_host(a):
-    if type(a).__module__.startswith('cupy'):
-        return a.get()
-    return numpy.asarray(a)
+
 
 
 def _block_key(coords):

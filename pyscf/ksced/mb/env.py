@@ -11,7 +11,8 @@ import copy
 import numpy
 from pyscf.lib import logger
 
-from pyscf.ksced.ksced import _is_cell, _as_like, _trace_prod, _kinetic_of
+from pyscf.ksced.ksced import _is_cell, _trace_prod, _kinetic_of
+from pyscf.ksced.mb.arrays import to_host as _host
 from pyscf.ksced.mb.griddens import _GridDensity
 from pyscf.ksced.mb.numint import _ksced_numint
 
@@ -25,8 +26,6 @@ def _conc(mol_a, mol_b):
     return conc_mol(mol_a, mol_b)
 
 
-def _host(a):
-    return a.get() if type(a).__module__.startswith('cupy') else numpy.asarray(a)
 
 
 class _FrozenEnvMB:
@@ -208,18 +207,44 @@ class _FrozenEnvMB:
     # -- MB-only ---------------------------------------------------------
 
     def _make_evaluator(self, ni, kpt=None):
-        mol_b, dm_b = self.mol_b, self.dm_b
-        if _is_cell(mol_b):
-            kpt_ = numpy.zeros(3) if kpt is None else kpt
+        '''rho_B(coords) at GGA order, using B's own AOs.
 
-            def evaluator(coords):
-                ao = ni.eval_ao(mol_b, coords, kpt_, deriv=1)
-                return ni.eval_rho(mol_b, ao, dm_b, xctype='GGA')
-        else:
+        The periodic backends disagree about gamma-point argument shapes.
+        PySCF's single-k-point NumInt wants a (3,) kpt and a (nao, nao) density
+        matrix; GPU4PySCF's asserts kpts.ndim == 2 and works in k-point-shaped
+        arrays throughout. Probing once with a single grid point settles it
+        without hard-coding a backend name, which ages badly.
+        '''
+        mol_b, dm_b = self.mol_b, self.dm_b
+
+        if not _is_cell(mol_b):
             def evaluator(coords):
                 ao = ni.eval_ao(mol_b, coords, deriv=1)
                 return ni.eval_rho(mol_b, ao, dm_b, xctype='GGA')
-        return evaluator
+            return evaluator
+
+        k1 = numpy.zeros(3) if kpt is None else numpy.asarray(kpt).reshape(3)
+        dm_k = dm_b[None] if numpy.ndim(dm_b) == 2 else dm_b
+
+        probe = numpy.zeros((1, 3))
+        errors = []
+        for kk, dd in ((k1, dm_b), (k1.reshape(1, 3), dm_k)):
+            try:
+                ao = ni.eval_ao(mol_b, probe, kk, deriv=1)
+                ni.eval_rho(mol_b, ao, dd, xctype='GGA')
+            except Exception as exc:          # noqa: BLE001 - probing
+                errors.append('%s: %s' % (type(exc).__name__, exc))
+                continue
+
+            def evaluator(coords, _kk=kk, _dd=dd):
+                ao = ni.eval_ao(mol_b, coords, _kk, deriv=1)
+                return ni.eval_rho(mol_b, ao, _dd, xctype='GGA')
+            return evaluator
+
+        raise RuntimeError(
+            'KSCED: cannot evaluate the environment density with %s. Neither '
+            'gamma-point convention worked:\n  1-D kpt: %s\n  2-D kpts: %s'
+            % (type(ni).__name__, errors[0], errors[1]))
 
     def numint_for(self, ni, kpt=None):
         '''The offset twin of ni. Built once and cached.'''
