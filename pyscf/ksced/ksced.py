@@ -13,6 +13,47 @@ def _is_cell(mol):
     return isinstance(mol, Cell)
 
 
+def _is_gpu_array(a):
+    return type(a).__module__.startswith('cupy')
+
+
+def _as_like(ref, arr):
+    '''Return arr on the same array backend as ref.
+
+    GPU4PySCF keeps density matrices and potentials in cupy while some
+    one-electron integrals stay in numpy, and cupy refuses to broadcast against
+    a host array. Everything that mixes the two goes through here.
+    '''
+    if _is_gpu_array(ref) and not _is_gpu_array(arr):
+        import cupy
+        return cupy.asarray(arr)
+    if not _is_gpu_array(ref) and _is_gpu_array(arr):
+        return arr.get()
+    return arr
+
+
+def _trace_prod(a, b):
+    '''<a|b> = einsum('ij,ji->', a, b).real, as a Python float, on any backend.'''
+    if _is_gpu_array(a) or _is_gpu_array(b):
+        import cupy
+        a = cupy.asarray(a) if not _is_gpu_array(a) else a
+        b = cupy.asarray(b) if not _is_gpu_array(b) else b
+        return float(cupy.einsum('ij,ji->', a, b).real.get())
+    return float(numpy.einsum('ij,ji->', a, b).real)
+
+
+def _tag_array(a, **tags):
+    """lib.tag_array on whichever backend a lives on.
+
+    PySCF's tag_array calls numpy.asarray, which cupy refuses. GPU4PySCF ships an
+    equivalent that produces a CPArrayWithTag.
+    """
+    if _is_gpu_array(a):
+        from gpu4pyscf.lib.cupy_helper import tag_array as gpu_tag_array
+        return gpu_tag_array(a, **tags)
+    return lib.tag_array(a, **tags)
+
+
 def _vne_of(mol, with_df=None, kpt=None):
     '''Nuclear-electron attraction matrix for mol, pseudopotential and PBC aware.
 
@@ -30,7 +71,13 @@ def _vne_of(mol, with_df=None, kpt=None):
     '''
     if _is_cell(mol):
         from pyscf.pbc.df import fft
-        if with_df is None:
+        # get_pp/get_nuc below are the CPU implementations and drive the density
+        # fitting object through aoR_loop. A GPU4PySCF FFTDF does not provide it,
+        # so fall back to building a CPU one over the same cell. V_ne is a fixed
+        # one-electron matrix, so evaluating it on the host costs nothing that
+        # matters and keeps the result a plain ndarray, which is what GPU4PySCF's
+        # own get_hcore returns too.
+        if with_df is None or not hasattr(with_df, 'aoR_loop'):
             with_df = fft.FFTDF(mol)
         if kpt is None:
             kpt = numpy.zeros(3)
@@ -123,8 +170,8 @@ class _FrozenEnv:
     def e_vne_a_rho_b(self, mol_a, with_df=None, kpt=None):
         '''<V_ne[A] | rho_B>, a constant of the embedded SCF.'''
         if self._e_vne_a_rho_b is None:
-            self._e_vne_a_rho_b = numpy.einsum(
-                'ij,ji->', _vne_of(mol_a, with_df, kpt), self.dm_b).real
+            self._e_vne_a_rho_b = _trace_prod(_vne_of(mol_a, with_df, kpt),
+                                              self.dm_b)
         return self._e_vne_a_rho_b
 
 
@@ -168,8 +215,9 @@ class KSCEDMixin(_KSCED):
     def get_hcore(self, mol=None):
         if mol is None:
             mol = self.mol
-        return super().get_hcore(mol) + self.with_env.get_vne_b(
-            mol, getattr(self, 'kpt', None))
+        h1e = super().get_hcore(mol)
+        vne_b = self.with_env.get_vne_b(mol, getattr(self, 'kpt', None))
+        return h1e + _as_like(h1e, vne_b)
 
     def energy_nuc(self):
         e = super().energy_nuc()
@@ -193,8 +241,7 @@ class KSCEDMixin(_KSCED):
                                           getattr(self, 'kpt', None))
         # The second half of J_AB. get_veff already contributed the first half
         # through ecoul = 0.5 * <dm_a | J[rho_total]>.
-        e_coul_ab_half = numpy.einsum(
-            'ij,ji->', env.get_j_b(self, self.mol), dm).real * .5
+        e_coul_ab_half = _trace_prod(env.get_j_b(self, self.mol), dm) * .5
 
         self.scf_summary['ksced_vne_a_rho_b'] = e_vne_a_rho_b
         self.scf_summary['ksced_coul_ab_half'] = e_coul_ab_half

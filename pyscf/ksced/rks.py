@@ -2,7 +2,8 @@
 
 import numpy
 from pyscf import lib
-from pyscf.ksced.ksced import KSCEDMixin
+from pyscf.ksced.ksced import (KSCEDMixin, _as_like, _trace_prod,
+                               _tag_array)
 
 
 class KSCEDRKS(KSCEDMixin):
@@ -31,7 +32,7 @@ class KSCEDRKS(KSCEDMixin):
         max_memory = self.max_memory - lib.current_memory()[0]
 
         dm_a = dm
-        dm_t = dm_a + env.dm_b
+        dm_t = dm_a + _as_like(dm_a, env.dm_b)
 
         # Exchange-correlation at the total density.
         n, exc_t, vxc = ni.nr_rks(mol, self.grids, self.xc, dm_t,
@@ -52,7 +53,7 @@ class KSCEDRKS(KSCEDMixin):
         vxc += vj
 
         # Half of J_AA plus half of J_AB; energy_elec adds the other half of J_AB.
-        ecoul = numpy.einsum('ij,ji', dm_a, vj).real * .5
+        ecoul = _trace_prod(dm_a, vj) * .5
 
-        vxc = lib.tag_array(vxc, ecoul=ecoul, exc=exc, vj=vj, vk=None)
+        vxc = _tag_array(vxc, ecoul=ecoul, exc=exc, vj=vj, vk=None)
         return vxc
