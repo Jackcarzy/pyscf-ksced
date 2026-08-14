@@ -212,13 +212,30 @@ def _is_pbc(mf):
 
 
 def _check_numint(mf):
-    '''KSCED needs the plain grid-based NumInt; MultiGrid takes a different path.'''
+    '''KSCED needs the plain grid-based NumInt; MultiGrid takes a different path.
+
+    The multigrid class to look for moved between PySCF releases: 2.5 routes
+    through a density fitting object, MultiGridFFTDF, while 2.14 routes through
+    a numint, MultiGridNumInt. Probe for whichever exists so the plugin keeps
+    working across both, which the Stage 1 and Stage 2 comparisons rely on.
+    '''
     if not _is_pbc(mf):
         return
-    from pyscf.pbc.dft import multigrid
-    if isinstance(mf._numint, multigrid.MultiGridNumInt):
+    try:
+        from pyscf.pbc.dft import multigrid
+    except ImportError:
+        return
+
+    numint_cls = getattr(multigrid, 'MultiGridNumInt', None)
+    if numint_cls is not None and isinstance(mf._numint, numint_cls):
         raise NotImplementedError(
             'KSCED does not support MultiGridNumInt. Build the RKS object '
+            'without multigrid acceleration.')
+
+    df_cls = getattr(multigrid, 'MultiGridFFTDF', None)
+    if df_cls is not None and isinstance(getattr(mf, 'with_df', None), df_cls):
+        raise NotImplementedError(
+            'KSCED does not support MultiGridFFTDF. Build the RKS object '
             'without multigrid acceleration.')
 
 
