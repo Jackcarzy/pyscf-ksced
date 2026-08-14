@@ -66,5 +66,32 @@ class GPUPeriodic(unittest.TestCase):
         self.assertAlmostEqual(gpu[1], cpu[1], 5)
 
 
+@unittest.skipUnless(HAS_GPU, 'gpu4pyscf or cupy not importable')
+class GPUMolecularRefused(unittest.TestCase):
+    """Molecular MB on GPU4PySCF is refused, and refused loudly.
+
+    Probed on an H200: its nr_rks distributes grid blocks across devices
+    without calling ni.block_loop, and the class has no _gen_rho_evaluator, so
+    neither hook fires. nr_rks then runs to completion and returns an energy
+    computed from rho_A alone -- 0 blocks seen out of 33792 grid points, no
+    exception. The guard turns that silent wrong answer into a named error.
+    """
+
+    def test_molecular_gpu_raises_rather_than_returning_a_wrong_energy(self):
+        from pyscf import gto, ksced
+        from gpu4pyscf import dft as gdft
+
+        common = dict(basis='sto-3g', verbose=0)
+        mol_a = gto.M(atom='O 0 0 1.5; H 0 0.76 2.09; H 0 -0.76 2.09', **common)
+        mol_b = gto.M(atom='Li 0 0 0', charge=1, **common)
+
+        mf_b = gdft.RKS(mol_b, xc='PBE')
+        mf_b.kernel()
+        mf_a = ksced.embed(gdft.RKS(mol_a, xc='PBE'), mf_b, basis_mode='M')
+        with self.assertRaises(NotImplementedError) as cm:
+            mf_a.kernel()
+        self.assertIn('environment density was never added', str(cm.exception))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -93,6 +93,7 @@ class KSCEDMBRKS(KSCEDMBMixin):
         # reported separately and never returned to the stock grid warning.
         n, exc_t, vxc = ni_t.nr_rks(mol, self.grids, self.xc, dm_a,
                                     max_memory=max_memory)
+        self._assert_env_density_entered()
         self._log_electron_counts(n)
         # Non-additive kinetic energy: T[rho] - T[rho_A] - T[rho_B].
         _, t_t, v_t_t = ni_t.nr_rks(mol, self.grids, self.t_nad, dm_a,
