@@ -155,9 +155,20 @@ class _FrozenEnv:
         '''<V_ne[A] | rho_B>, a constant of the embedded SCF.
 
         vne_a is supplied by the mixin, which is the only place with access to
-        the unmodified get_hcore for subsystem A.
+        the unmodified get_hcore for subsystem A. It may be the matrix itself
+        or a zero-argument callable returning it; the callable form is only
+        invoked on a cache miss, which is once per SCF.
+
+        That laziness matters. Building V_ne[A] means building a full hcore,
+        and this value is a constant of the embedded SCF, so evaluating it
+        eagerly on every energy_elec call rebuilt an hcore every cycle and
+        discarded it. Measured on Au120 partition 10 on an H200: the embedded
+        phase took 401 s with the eager call against 215 s for an equivalent
+        implementation that precomputes the constant.
         '''
         if self._e_vne_a_rho_b is None:
+            if callable(vne_a):
+                vne_a = vne_a()
             self._e_vne_a_rho_b = _trace_prod(vne_a, self.dm_b)
         return self._e_vne_a_rho_b
 
@@ -223,7 +234,11 @@ class KSCEDMixin(_KSCED):
         # Constant: the A nuclei attracting the frozen B electrons. For a
         # periodic system, reuse A's own density fitting object so the mesh
         # matches the one the SCF runs on.
-        e_vne_a_rho_b = env.e_vne_a_rho_b(self._vne_a())
+        #
+        # Passed unevaluated. _vne_a() builds a full hcore, and the environment
+        # caches the contraction after the first cycle, so calling it here
+        # would rebuild that hcore every cycle only to discard it.
+        e_vne_a_rho_b = env.e_vne_a_rho_b(self._vne_a)
         # The second half of J_AB. get_veff already contributed the first half
         # through ecoul = 0.5 * <dm_a | J[rho_total]>.
         e_coul_ab_half = _trace_prod(env.get_j_b(self, self.mol), dm) * .5
