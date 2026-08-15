@@ -38,7 +38,10 @@ def _block_key(coords):
 
 
 class _GridDensity:
-    '''Memoised rho_B(coords), always stored at GGA order, shape (4, n).
+    '''Memoised rho_B(coords), stored at GGA order.
+
+    Restricted densities have shape (4,n); unrestricted densities have shape
+    (2,4,n), with the leading axis holding alpha and beta.
 
     evaluator(coords) -> ndarray (4, n) is supplied by the backend adapter,
     which is the only part that knows how to evaluate B's AOs.
@@ -51,7 +54,29 @@ class _GridDensity:
 
     def reset(self):
         self._cache = {}
+        self._spin_access = {}
         return self
+
+    def begin_spin_access(self):
+        self._spin_access = {}
+
+    def note_spin_access(self, coords, spin):
+        '''Record one alpha/beta service per block and reject duplicates.'''
+        key = _block_key(coords)
+        seen = self._spin_access.setdefault(key, set())
+        if spin in seen:
+            raise RuntimeError(
+                'KSCED: environment density was served twice for spin %d on '
+                'one grid block; refusing a double-counted UKS result' % spin)
+        seen.add(spin)
+
+    def assert_spin_access(self):
+        bad = [seen for seen in self._spin_access.values()
+               if seen != {0, 1}]
+        if bad:
+            raise RuntimeError(
+                'KSCED: UKS environment density did not enter exactly once '
+                'per spin channel on every grid block')
 
     @property
     def nblocks(self):
@@ -76,7 +101,7 @@ class _GridDensity:
             rho = numpy.asarray(rho)
         if rho.ndim == 1:
             rho = rho[None, :]
-        if rho.shape[0] not in (1, 4, 5):
+        if rho.ndim not in (2, 3) or rho.shape[-2] not in (1, 4, 5):
             raise RuntimeError('KSCED: unexpected rho_B shape %r' % (rho.shape,))
         with self._lock:
             self._cache[key] = (_to_host(coords), rho)

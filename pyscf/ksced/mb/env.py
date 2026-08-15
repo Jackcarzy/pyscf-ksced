@@ -11,7 +11,8 @@ import copy
 import numpy
 from pyscf.lib import logger
 
-from pyscf.ksced.ksced import _is_cell, _trace_prod, _kinetic_of
+from pyscf.ksced.ksced import (_is_cell, _kinetic_of, _spin_sum, _stack_like,
+                               _trace_prod_spin)
 from pyscf.ksced.mb.arrays import to_host as _host
 from pyscf.ksced.mb.griddens import _GridDensity
 from pyscf.ksced.mb.numint import _ksced_numint
@@ -136,6 +137,13 @@ class _FrozenEnvMB:
 
     # -- the _FrozenEnv interface ---------------------------------------
 
+    @property
+    def polarized(self):
+        return getattr(self.dm_b, 'ndim', 2) == 3
+
+    def _nr(self, ni):
+        return ni.nr_uks if self.polarized else ni.nr_rks
+
     def get_vne_b(self, mol=None, kpt=None):
         '''V_ne[B] in A's basis: the A-A block of V_ne_ab, less A's own.'''
         if self._vne_b is None:
@@ -158,7 +166,7 @@ class _FrozenEnvMB:
             n = self.nao_a
             nao_ab = self.nao_a + self.nao_b
             dm_pad = numpy.zeros((nao_ab, nao_ab))
-            dm_pad[n:, n:] = _host(self.dm_b).real
+            dm_pad[n:, n:] = _host(_spin_sum(self.dm_b)).real
             mf_ab = self._mf_on(self.mol_ab)
             if _is_cell(self.mol_ab):
                 j_ab = mf_ab.get_j(self.mol_ab, dm_pad, 1, numpy.zeros(3), None)
@@ -175,33 +183,36 @@ class _FrozenEnvMB:
         KSCEDMixin stay untouched.
         '''
         if self._e_vne_a_rho_b is None:
-            self._e_vne_a_rho_b = _trace_prod(self._vne_a_in_bs_basis(),
-                                              self.dm_b)
+            self._e_vne_a_rho_b = _trace_prod_spin(
+                self._vne_a_in_bs_basis(), self.dm_b)
         return self._e_vne_a_rho_b
 
     def e_xc(self, ni, mol, grids, xc, max_memory):
         '''E_xc[rho_B], evaluated with B's own AOs on the supermolecular grid.'''
         if self._e_xc is None:
-            self._e_xc = ni.nr_rks(self.mol_b, grids, xc, self.dm_b,
-                                   max_memory=max_memory)[1]
+            self._e_xc = self._nr(ni)(self.mol_b, grids, xc, self.dm_b,
+                                      max_memory=max_memory)[1]
         return self._e_xc
 
     def e_tnad_b(self, ni, mol, grids, t_nad, max_memory):
         if self._e_tnad_b is None:
-            self._e_tnad_b = ni.nr_rks(self.mol_b, grids, t_nad, self.dm_b,
-                                       max_memory=max_memory)[1]
+            self._e_tnad_b = self._nr(ni)(
+                self.mol_b, grids, t_nad, self.dm_b,
+                max_memory=max_memory)[1]
         return self._e_tnad_b
 
     def e_xc_pbc(self, ni, cell, grids, xc, hermi, kpt, max_memory):
         if self._e_xc is None:
-            self._e_xc = ni.nr_rks(self.mol_b, grids, xc, self.dm_b, 0, hermi,
-                                   kpt, None, max_memory=max_memory)[1]
+            self._e_xc = self._nr(ni)(
+                self.mol_b, grids, xc, self.dm_b, 0, hermi, kpt, None,
+                max_memory=max_memory)[1]
         return self._e_xc
 
     def e_tnad_b_pbc(self, ni, cell, grids, t_nad, hermi, kpt, max_memory):
         if self._e_tnad_b is None:
-            self._e_tnad_b = ni.nr_rks(self.mol_b, grids, t_nad, self.dm_b, 0,
-                                       hermi, kpt, None, max_memory=max_memory)[1]
+            self._e_tnad_b = self._nr(ni)(
+                self.mol_b, grids, t_nad, self.dm_b, 0, hermi, kpt, None,
+                max_memory=max_memory)[1]
         return self._e_tnad_b
 
     # -- MB-only ---------------------------------------------------------
@@ -217,28 +228,46 @@ class _FrozenEnvMB:
         '''
         mol_b, dm_b = self.mol_b, self.dm_b
 
+        def eval_channels(ao, dm):
+            if getattr(dm, 'ndim', 2) == 2:
+                return ni.eval_rho(mol_b, ao, dm, xctype='GGA')
+            rhos = [ni.eval_rho(mol_b, ao, dm[s], xctype='GGA')
+                    for s in range(2)]
+            return _stack_like(rhos[0], rhos)
+
         if not _is_cell(mol_b):
             def evaluator(coords):
                 ao = ni.eval_ao(mol_b, coords, deriv=1)
-                return ni.eval_rho(mol_b, ao, dm_b, xctype='GGA')
+                return eval_channels(ao, dm_b)
             return evaluator
 
         k1 = numpy.zeros(3) if kpt is None else numpy.asarray(kpt).reshape(3)
-        dm_k = dm_b[None] if numpy.ndim(dm_b) == 2 else dm_b
-
         probe = numpy.zeros((1, 3))
         errors = []
-        for kk, dd in ((k1, dm_b), (k1.reshape(1, 3), dm_k)):
+        for kk, add_k_axis in ((k1, False), (k1.reshape(1, 3), True)):
+            dd = dm_b[None] if add_k_axis and numpy.ndim(dm_b) == 2 else dm_b
             try:
                 ao = ni.eval_ao(mol_b, probe, kk, deriv=1)
-                ni.eval_rho(mol_b, ao, dd, xctype='GGA')
+                if self.polarized:
+                    for s in range(2):
+                        ds = dm_b[s][None] if add_k_axis else dm_b[s]
+                        ni.eval_rho(mol_b, ao, ds, xctype='GGA')
+                else:
+                    ni.eval_rho(mol_b, ao, dd, xctype='GGA')
             except Exception as exc:          # noqa: BLE001 - probing
                 errors.append('%s: %s' % (type(exc).__name__, exc))
                 continue
 
-            def evaluator(coords, _kk=kk, _dd=dd):
+            def evaluator(coords, _kk=kk, _add=add_k_axis):
                 ao = ni.eval_ao(mol_b, coords, _kk, deriv=1)
-                return ni.eval_rho(mol_b, ao, _dd, xctype='GGA')
+                if not self.polarized:
+                    dd = dm_b[None] if _add else dm_b
+                    return ni.eval_rho(mol_b, ao, dd, xctype='GGA')
+                rhos = []
+                for s in range(2):
+                    dd = dm_b[s][None] if _add else dm_b[s]
+                    rhos.append(ni.eval_rho(mol_b, ao, dd, xctype='GGA'))
+                return _stack_like(rhos[0], rhos)
             return evaluator
 
         raise RuntimeError(

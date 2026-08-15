@@ -14,7 +14,9 @@ def _is_cell(mol):
 
 
 def _is_gpu_array(a):
-    return type(a).__module__.startswith('cupy')
+    # Tagged GPU4PySCF arrays live in gpu4pyscf.lib.cupy_helper rather than a
+    # cupy.* module, but retain CuPy's explicit host-transfer method.
+    return not isinstance(a, numpy.ndarray) and callable(getattr(a, 'get', None))
 
 
 def _as_like(ref, arr):
@@ -40,6 +42,58 @@ def _trace_prod(a, b):
         b = cupy.asarray(b) if not _is_gpu_array(b) else b
         return float(cupy.einsum('ij,ji->', a, b).real.get())
     return float(numpy.einsum('ij,ji->', a, b).real)
+
+
+def _spin_sum(dm):
+    """Total density matrix from one that may be spin resolved.
+
+    An unrestricted density matrix is (2, nao, nao); a restricted one is
+    (nao, nao). Every cross term in the KSCED energy contracts a spin-free
+    one-electron operator -- V_ne[A], J[rho_B] -- against a density, and those
+    contractions want the total density in both cases.
+    """
+    return dm[0] + dm[1] if getattr(dm, 'ndim', 2) == 3 else dm
+
+
+def _trace_prod_spin(a, b):
+    """<a|b> where a is a 2-D operator and b may be spin resolved."""
+    return _trace_prod(a, _spin_sum(b))
+
+
+def _is_polarized(dm):
+    """True when dm carries an explicit spin axis."""
+    return getattr(dm, 'ndim', 2) == 3
+
+
+def _as_pair(dm):
+    """dm as (2, nao, nao), splitting a restricted matrix evenly."""
+    if _is_polarized(dm):
+        return dm
+    half = dm * .5
+    return _stack_like(half, [half, half])
+
+
+def _stack_like(ref, arrays):
+    """Stack on whichever backend ref lives on."""
+    if _is_gpu_array(ref):
+        import cupy
+        return cupy.stack([cupy.asarray(a) for a in arrays])
+    return numpy.stack([numpy.asarray(a) for a in arrays])
+
+
+def _avg_spin(v):
+    """The spin average of a (2, nao, nao) potential, as a 2-D matrix.
+
+    Used for a restricted subsystem A embedded in a polarised environment. It
+    is not an approximation: A's own restrictedness constrains
+    rho_alpha = rho_beta = rho_A / 2, so
+
+        dE/dD_A = dE/dD_alpha . dD_alpha/dD_A + dE/dD_beta . dD_beta/dD_A
+                = (v_alpha + v_beta) / 2
+
+    and the matrix returned is the exact gradient of the energy reported.
+    """
+    return (v[0] + v[1]) * .5 if _is_polarized(v) else v
 
 
 def _tag_array(a, **tags):
@@ -111,6 +165,34 @@ class _FrozenEnv:
         self._e_vne_a_rho_b = None
         return self
 
+    @property
+    def polarized(self):
+        '''True when B was converged unrestricted, so dm_b carries a spin axis.'''
+        return _is_polarized(self.dm_b)
+
+    def dm_b_for(self, polarized_a):
+        '''rho_B in the spin layout subsystem A needs.
+
+        Four cases, and three of them are not the identity:
+
+          A restricted, B restricted    dm_b unchanged
+          A restricted, B unrestricted  spin summed to the total
+          A unrestricted, B restricted  halved into each channel -- adding the
+                                        whole of rho_B to both would double the
+                                        environment, silently
+          A unrestricted, B unrestricted  dm_b unchanged
+        '''
+        if polarized_a and not self.polarized:
+            half = self.dm_b * .5
+            return _stack_like(half, (half, half))
+        if not polarized_a and self.polarized:
+            return _spin_sum(self.dm_b)
+        return self.dm_b
+
+    def _nr(self, ni, polarized):
+        '''The restricted or unrestricted numint driver, as B requires.'''
+        return ni.nr_uks if polarized else ni.nr_rks
+
     def get_vne_b(self, mol, kpt=None):
         '''V_ne[B] in the shared AO basis, from B's own get_hcore.'''
         if self._vne_b is None:
@@ -118,37 +200,49 @@ class _FrozenEnv:
         return self._vne_b
 
     def get_j_b(self, mf, mol):
-        '''J[rho_B] in the shared AO basis.'''
+        '''J[rho_B] in the shared AO basis.
+
+        Always a single 2-D matrix. The Coulomb potential depends only on the
+        total density, and PySCF's own UKS spin-sums the density matrix before
+        building J for exactly this reason.
+        '''
         if self._j_b is None:
-            self._j_b = mf.get_j(mol, self.dm_b, 1)
+            self._j_b = mf.get_j(mol, _spin_sum(self.dm_b), 1)
         return self._j_b
 
     def e_xc(self, ni, mol, grids, xc, max_memory):
         '''E_xc[rho_B].'''
         if self._e_xc is None:
-            self._e_xc = ni.nr_rks(mol, grids, xc, self.dm_b,
-                                   max_memory=max_memory)[1]
+            self._e_xc = self._nr(ni, self.polarized)(
+                mol, grids, xc, self.dm_b, max_memory=max_memory)[1]
         return self._e_xc
 
     def e_tnad_b(self, ni, mol, grids, t_nad, max_memory):
-        '''T_s^TF[rho_B], the B term of the non-additive kinetic energy.'''
+        '''T_s^TF[rho_B], the B term of the non-additive kinetic energy.
+
+        libxc applies the Thomas-Fermi spin-scaling relation itself, so the
+        unrestricted driver gives 0.5*(T[2 rho_a] + T[2 rho_b]) with no help
+        from us, and reduces to the restricted value when the channels match.
+        '''
         if self._e_tnad_b is None:
-            self._e_tnad_b = ni.nr_rks(mol, grids, t_nad, self.dm_b,
-                                       max_memory=max_memory)[1]
+            self._e_tnad_b = self._nr(ni, self.polarized)(
+                mol, grids, t_nad, self.dm_b, max_memory=max_memory)[1]
         return self._e_tnad_b
 
     def e_xc_pbc(self, ni, cell, grids, xc, hermi, kpt, max_memory):
         '''E_xc[rho_B] for the periodic path.'''
         if self._e_xc is None:
-            self._e_xc = ni.nr_rks(cell, grids, xc, self.dm_b, 0, hermi,
-                                   kpt, None, max_memory=max_memory)[1]
+            self._e_xc = self._nr(ni, self.polarized)(
+                cell, grids, xc, self.dm_b, 0, hermi, kpt, None,
+                max_memory=max_memory)[1]
         return self._e_xc
 
     def e_tnad_b_pbc(self, ni, cell, grids, t_nad, hermi, kpt, max_memory):
         '''T_s^TF[rho_B] for the periodic path.'''
         if self._e_tnad_b is None:
-            self._e_tnad_b = ni.nr_rks(cell, grids, t_nad, self.dm_b, 0, hermi,
-                                       kpt, None, max_memory=max_memory)[1]
+            self._e_tnad_b = self._nr(ni, self.polarized)(
+                cell, grids, t_nad, self.dm_b, 0, hermi, kpt, None,
+                max_memory=max_memory)[1]
         return self._e_tnad_b
 
     def e_vne_a_rho_b(self, vne_a):
@@ -169,7 +263,7 @@ class _FrozenEnv:
         if self._e_vne_a_rho_b is None:
             if callable(vne_a):
                 vne_a = vne_a()
-            self._e_vne_a_rho_b = _trace_prod(vne_a, self.dm_b)
+            self._e_vne_a_rho_b = _trace_prod_spin(vne_a, self.dm_b)
         return self._e_vne_a_rho_b
 
 
@@ -241,7 +335,8 @@ class KSCEDMixin(_KSCED):
         e_vne_a_rho_b = env.e_vne_a_rho_b(self._vne_a)
         # The second half of J_AB. get_veff already contributed the first half
         # through ecoul = 0.5 * <dm_a | J[rho_total]>.
-        e_coul_ab_half = _trace_prod(env.get_j_b(self, self.mol), dm) * .5
+        e_coul_ab_half = _trace_prod_spin(
+            env.get_j_b(self, self.mol), dm) * .5
 
         self.scf_summary['ksced_vne_a_rho_b'] = e_vne_a_rho_b
         self.scf_summary['ksced_coul_ab_half'] = e_coul_ab_half
@@ -294,6 +389,106 @@ def _check_numint(mf):
         raise NotImplementedError(
             'KSCED does not support MultiGridFFTDF. Build the RKS object '
             'without multigrid acceleration.')
+
+
+def _needs_uks_machinery(mf, env):
+    '''True when the unrestricted classes are required.
+
+    Either subsystem being polarised is enough. A polarised B *promotes* a
+    restricted A into the unrestricted machinery: v_xc and v_T are then
+    spin dependent, and A is fed the average of the two channels.
+
+    That average is not an approximation. With rho_a = rho_b = rho_A/2 held by
+    A's own restrictedness,
+
+        dE/dD_A = dE/dD^a . dD^a/dD_A + dE/dD^b . dD^b/dD_A = (v_a + v_b)/2
+
+    so the 2-D matrix handed back is the exact gradient of the energy reported.
+    '''
+    return _is_unrestricted(mf) or env.polarized
+
+
+def _sb_class(mf, env):
+    '''The supermolecular KSCED class: domain x spin.
+
+    Whether either subsystem is polarised selects the spin axis; the A/B
+    difference within the unrestricted case is absorbed by the environment,
+    which reshapes rho_B to the layout A needs.
+    '''
+    from pyscf.ksced import rks as ksced_rks
+    from pyscf.ksced import pbcrks as ksced_pbcrks
+
+    if _needs_uks_machinery(mf, env):
+        if _is_pbc(mf):
+            from pyscf.ksced import pbcuks as ksced_pbcuks
+            return (ksced_pbcuks.KSCEDPBCUKS if _is_unrestricted(mf)
+                    else ksced_pbcuks.KSCEDPBCRKSinU)
+        from pyscf.ksced import uks as ksced_uks
+        return (ksced_uks.KSCEDUKS if _is_unrestricted(mf)
+                else ksced_uks.KSCEDRKSinU)
+    return ksced_pbcrks.KSCEDPBCRKS if _is_pbc(mf) else ksced_rks.KSCEDRKS
+
+
+def _is_unrestricted(mf):
+    '''True when mf carries separate alpha and beta orbitals.
+
+    Uses istype, not isinstance. pyscf.pbc.scf.uhf.UHF derives from
+    pbc.scf.hf.SCF and copies the molecular UHF methods by assignment rather
+    than inheriting them, so isinstance(mf, pyscf.scf.uhf.UHF) is **False for a
+    periodic UKS object** -- measured, not assumed. That test would route a
+    periodic UKS silently into the restricted class and produce a converged
+    wrong answer. istype walks class names through the MRO and is correct on
+    all four backends.
+    '''
+    return bool(mf.istype('UHF'))
+
+
+def _reject_restricted_open_shell(mf, what):
+    '''ROHF/ROKS is neither of the two cases the energy expression covers.
+
+    ROKS.get_veff delegates to the unrestricted one and make_rdm1 returns a
+    (2,nao,nao) density, but the Fock build stays restricted. istype('UHF') is
+    False for it, so without this check it would take the restricted path with
+    a spin-resolved density matrix -- which nr_rks silently reads as two
+    separate density matrices rather than two spin channels.
+    '''
+    if mf.istype('ROHF'):
+        raise NotImplementedError(
+            'KSCED does not support restricted open-shell: %s is ROHF/ROKS. '
+            'Its density matrix is spin resolved while its Fock build is not, '
+            'and the KSCED energy expression is not defined for that split. '
+            'Use UKS.' % what)
+
+
+def _reject_kpts(mf, what):
+    '''KSCED is gamma-point only, and a k-point object must be refused here.
+
+    The spin dispatch reads a density matrix's rank: _is_polarized is
+    dm.ndim == 3. A k-point density matrix carries its own leading axis, so
+    both k-point classes are misread, in opposite directions:
+
+      KRKS  (nkpts, nao, nao)     rank 3, mistaken for alpha/beta
+      KUKS  (2, nkpts, nao, nao)  rank 4, mistaken for restricted -- and
+                                  istype('UHF') is False for KUKS as well, so
+                                  nothing else catches it either
+
+    Both happen to die downstream today, on a tuple unpack and on a complex
+    cast respectively. That is luck, not a guarantee: it depends on nkpts and
+    on the k-point density being complex, and neither is a property KSCED
+    controls. Before the unrestricted work a 3-D dm_b was stopped by
+    _trace_prod's 2-D einsum; _trace_prod_spin now spin-sums instead, so that
+    incidental net is gone and this one replaces it deliberately.
+
+    Checked on the object rather than the density matrix, so it fires at
+    embed() with a message naming the cause instead of somewhere in the third
+    SCF cycle.
+    '''
+    if mf.istype('KSCF'):
+        raise NotImplementedError(
+            'KSCED is gamma-point only: %s is a k-point SCF object (%s). Its '
+            'density matrix carries a k-point axis that the spin dispatch '
+            'would read as alpha/beta. Build the subsystem at the gamma point '
+            'with RKS/UKS instead of KRKS/KUKS.' % (what, type(mf).__name__))
 
 
 def _looks_supermolecular(mol_a, mol_b):
@@ -359,6 +554,11 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
             "basis_mode must be 'S' (supermolecular) or 'M' (monomolecular); "
             "got %r" % (basis_mode,))
 
+    _reject_restricted_open_shell(mf, 'subsystem A')
+    _reject_restricted_open_shell(mf_b, 'subsystem B')
+    _reject_kpts(mf, 'subsystem A')
+    _reject_kpts(mf_b, 'subsystem B')
+
     if basis_mode == 'S':
         env = _FrozenEnv(mf_b, dm_b)
         if isinstance(mf, _KSCED):
@@ -366,7 +566,7 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
             mf.mol_ab = mol_ab
             return mf
         _check_numint(mf)
-        base = ksced_pbcrks.KSCEDPBCRKS if _is_pbc(mf) else ksced_rks.KSCEDRKS
+        base = _sb_class(mf, env)
         obj = base(mf, env, mol_ab)
     else:
         from pyscf.ksced.mb import rks as mb_rks
@@ -387,7 +587,18 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
             mf.mol_ab = env.mol_ab
             return mf
         _check_numint(mf)
-        base = mb_pbcrks.KSCEDMBPBCRKS if _is_pbc(mf) else mb_rks.KSCEDMBRKS
+        if _needs_uks_machinery(mf, env):
+            if _is_pbc(mf):
+                from pyscf.ksced.mb import pbcuks as mb_pbcuks
+                base = (mb_pbcuks.KSCEDMBPBCUKS if _is_unrestricted(mf)
+                        else mb_pbcuks.KSCEDMBPBCRKSinU)
+            else:
+                from pyscf.ksced.mb import uks as mb_uks
+                base = (mb_uks.KSCEDMBUKS if _is_unrestricted(mf)
+                        else mb_uks.KSCEDMBRKSinU)
+        else:
+            base = (mb_pbcrks.KSCEDMBPBCRKS if _is_pbc(mf)
+                    else mb_rks.KSCEDMBRKS)
         obj = base(mf, env, env.mol_ab)
 
     # The synthesised class must not reuse the mixin's name, or the MRO reads
