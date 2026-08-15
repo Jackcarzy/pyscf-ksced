@@ -6,6 +6,7 @@ goes through the environment object and _FrozenEnvMB presents the same
 interface as _FrozenEnv.
 '''
 
+import numpy
 from pyscf.lib import logger
 from pyscf.ksced.ksced import KSCEDMixin
 
@@ -60,7 +61,7 @@ class KSCEDMBMixin(KSCEDMixin):
             "KSCED basis_mode='M' cannot reach the density evaluation of %s: "
             "the environment density was never added, so the result would be "
             "subsystem A alone. This is known for GPU4PySCF's molecular "
-            "numint, whose nr_rks computes rho inline per device rather than "
+            "numint, whose nr_rks/nr_uks computes rho inline per device rather than "
             "through eval_rho or _gen_rho_evaluator. Use the periodic GPU "
             "path, or run molecular MB on CPU PySCF."
             % type(self._numint).__name__) from cause
@@ -73,6 +74,10 @@ class KSCEDMBMixin(KSCEDMixin):
         Report the two separately instead, and never feed n_total to the stock
         warning.
         '''
+        get = getattr(n_total, 'get', None)
+        if callable(get):
+            n_total = get()
+        n_total = float(numpy.asarray(n_total).sum())
         n_b = self.with_env.mol_b.nelectron
         logger.debug(self, 'KSCED grid electrons: total %.6f, B %d, A %.6f',
                      float(n_total), n_b, float(n_total) - n_b)
