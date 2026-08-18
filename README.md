@@ -15,14 +15,6 @@ restricted or unrestricted Kohn-Sham methods.
 | PySCF | 2.5 or newer, developed against 2.14.0 |
 | NumPy | 1.13 or newer |
 | GPU4PySCF | optional, for the GPU examples |
-
-Development runs against PySCF 2.14.0, with 2.5.0 kept as a reference build
-for equivalence checks. Those two releases bracket an API change: multigrid
-acceleration moved from `MultiGridFFTDF` to `MultiGridNumInt`, and the numint
-density-evaluator interface changed. The package probes for whichever is
-present, so one install works across the range. Multigrid itself is not
-supported: build the KS object without it.
-
 The GPU paths additionally need CuPy and a visible CUDA device.
 
 ## Installation
@@ -102,12 +94,9 @@ print(mf_a.e_tot)
 - `examples/02_pbc_Super_GPU`: NH3+Au10 in Au110
 - `examples/03_pbc_Mono_GPU`: NH3+Au10 in Au110
 
-The GPU examples require GPU4PySCF.
-
 ## Monkey-patches
 
-Same physics as the plugin, assembled by assigning plain functions to instance attributes. 
-Nothing in PySCF is modified. Can be used right away.
+Same physics as the plugin, but nothing in PySCF is modified. Could be used right away.
 
 ## License
 
