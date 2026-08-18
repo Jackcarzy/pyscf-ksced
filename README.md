@@ -12,15 +12,16 @@ restricted or unrestricted Kohn-Sham methods.
 | | Version |
 |---|---|
 | Python | 3.9 or newer |
-| PySCF | 2.5 or newer |
+| PySCF | 2.5 or newer, developed against 2.14.0 |
 | NumPy | 1.13 or newer |
 | GPU4PySCF | optional, for the GPU examples |
 
-PySCF moved multigrid acceleration from `MultiGridFFTDF` to `MultiGridNumInt`
-between the 2.5 and 2.14 lines, and changed the numint density-evaluator
-interface. The package probes for whichever is present, so one install works
-across that range. Multigrid itself is not supported: build the KS object
-without it.
+Development runs against PySCF 2.14.0, with 2.5.0 kept as a reference build
+for equivalence checks. Those two releases bracket an API change: multigrid
+acceleration moved from `MultiGridFFTDF` to `MultiGridNumInt`, and the numint
+density-evaluator interface changed. The package probes for whichever is
+present, so one install works across the range. Multigrid itself is not
+supported: build the KS object without it.
 
 The GPU paths additionally need CuPy and a visible CUDA device.
 
