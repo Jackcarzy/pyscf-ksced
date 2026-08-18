@@ -7,6 +7,23 @@ in the frozen electron density of subsystem B.
 The package supports molecular and gamma-point periodic calculations with
 restricted or unrestricted Kohn-Sham methods.
 
+## Requirements
+
+| | Version |
+|---|---|
+| Python | 3.9 or newer |
+| PySCF | 2.5 or newer |
+| NumPy | 1.13 or newer |
+| GPU4PySCF | optional, for the GPU examples |
+
+PySCF moved multigrid acceleration from `MultiGridFFTDF` to `MultiGridNumInt`
+between the 2.5 and 2.14 lines, and changed the numint density-evaluator
+interface. The package probes for whichever is present, so one install works
+across that range. Multigrid itself is not supported: build the KS object
+without it.
+
+The GPU paths additionally need CuPy and a visible CUDA device.
+
 ## Installation
 
 Install the package in editable mode:
