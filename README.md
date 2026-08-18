@@ -76,35 +76,18 @@ print(mf_a.e_tot)
 # `mf_a.e_tnad` contains the non-additive kinetic energy.
 ```
 
-## Main options
+## Main options and examples
 
-```python
-mf_a = ksced.embed(
-    mf,                    # KS object for subsystem A
-    mf_b,                  # converged KS object for subsystem B
-    dm_b=None,             # optional density matrix for B
-    mol_ab=None,           # optional full-system Mole or Cell
-    basis_mode='S',        # 'S' or 'M'
-)
-```
+- `examples/00_mol_Super_CPU`: H2O in Li+
+- `examples/01_mol_Super_GPU`: CH3SH+Au10 in Au10
+- `examples/02_pbc_Super_GPU`: NH3+Au10 in Au110
+- `examples/03_pbc_Mono_GPU`: NH3+Au10 in Au110
+GPU require GPU4PySCF .
 
-The non-additive kinetic-energy functional defaults to Thomas-Fermi LDA and
-can be changed before running the calculation:
+## Monkey-patches
 
-```python
-mf_a.t_nad = 'LDA_K_TF'
-```
-
-## Examples
-
-- `examples/00-Li+_H2O.py`: molecular, supermolecular basis
-- `examples/01-Li+_H2O_mb.py`: molecular, monomolecular basis
-- `examples/02-CH3SH_Au4_pbc.py`: periodic, supermolecular basis
-- `examples/03-CH3SH_Au4_pbc_mb.py`: periodic, monomolecular basis
-
-## Tests
-
-GPU tests require GPU4PySCF, CuPy, and an available CUDA device.
+Same physics as the plugin, assembled by assigning plain functions to instance attributes. 
+Nothing in PySCF is modified. Can be used right away.
 
 ## License
 
