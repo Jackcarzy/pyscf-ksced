@@ -94,7 +94,7 @@ print(mf_a.e_tot)
 - `examples/02_pbc_Super_GPU`: NH3+Au10 in Au110
 - `examples/03_pbc_Mono_GPU`: NH3+Au10 in Au110
 
-## Monkey-patches
+## Monkey-patch
 
 Same physics as the plugin, but nothing in PySCF is modified. Could be used right away.
 
