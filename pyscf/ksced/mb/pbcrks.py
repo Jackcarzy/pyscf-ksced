@@ -3,10 +3,6 @@
 Mirrors ksced/pbcrks.py term for term. energy_elec, energy_nuc and get_hcore are
 inherited from KSCEDMixin: pbc/dft/rks.py assigns energy_elec = mol_ks.energy_elec,
 so one energy expression serves both domains and only get_veff is periodic.
-
-No grid replacement is needed here. UniformGrids depends only on the lattice and
-the mesh, and embed() asserts both match between cell_a and cell_b, so A's grid
-and the supermolecular grid are the same points.
 '''
 
 from pyscf import lib
@@ -43,14 +39,8 @@ class KSCEDMBPBCRKS(KSCEDMBMixin):
 
         dm_a = dm
 
-        # Exchange-correlation at the total density; rho_B is added on the grid.
-        # n counts N_A + N_B because the offset numint integrates rho_t; it is
-        # reported separately and never returned to the stock grid warning.
-        #
-        # A backend whose nr_rks bypasses the density hooks can either return a
-        # wrong energy silently or crash on an unrelated-looking shape error;
-        # both routes must end in the same named refusal, so the guard runs on
-        # the exception path too.
+        # Evaluate XC at rho_A + rho_B. Validate that the backend used the
+        # density hook, including when its integration call fails.
         try:
             n, exc_t, vxc = ni_t.nr_rks(cell, self.grids, self.xc, dm_a, 0,
                                         hermi, kpt, None,
@@ -73,9 +63,7 @@ class KSCEDMBPBCRKS(KSCEDMBMixin):
         exc = exc_t + self.e_tnad - env.e_xc_pbc(ni, cell, self.grids, self.xc,
                                                  hermi, kpt, max_memory)
 
-        # J[rho_total] in A's basis: A's own build plus the cached AB slice.
-        # The slice is cached on the host, so it has to be moved to whichever
-        # backend A's own build used before the two can be added.
+        # Build J[rho_A + rho_B] in A's basis and on A's array backend.
         vj_a = self.get_j(cell, dm_a, hermi, kpt, None)
         vj = vj_a + _like(vj_a, env.get_j_b(self, cell))
         vxc += vj

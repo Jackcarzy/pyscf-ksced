@@ -56,14 +56,8 @@ class _FrozenEnvMB:
         self.nao_a = mol_a.nao
         self.nao_b = self.mol_b.nao
 
-        # mol_ab means something different here than it does in the
-        # supermolecular path. There it is the real whole system, supplied only
-        # so E_nn[AB] can be added. Here every cross term is a *slice* of a
-        # matrix built at the AB dimension, so it must be the concatenation
-        # A (+) B, with nao_a + nao_b functions and A's block first.
-        #
-        # E_nn is unaffected by the difference: ghost centres carry no charge,
-        # so conc(mol_a, mol_b).energy_nuc() equals the real system's.
+        # Cross terms use slices of the concatenated A+B basis, with A first.
+        # Ghost centers do not affect the resulting nuclear energy.
         if mol_ab is None:
             mol_ab = _conc(mol_a, self.mol_b)
         elif mol_ab.nao != self.nao_a + self.nao_b:
@@ -93,20 +87,6 @@ class _FrozenEnvMB:
 
     def _mf_on(self, mol):
         '''A copy of mf_b rebound to mol.
-
-        mf_b itself cannot be asked for hcore or J on mol_ab: its density
-        fitting object is built for mol_b, so a periodic FFTDF would use the
-        wrong cell. Copying and calling reset(mol) rebinds it while keeping
-        mf_b's class -- and therefore its backend and its choice of method
-        inside get_hcore, which is what docs/architecture.md section 4
-        requires. mf_b is never mutated.
-
-        The density fitting object must be copied too. SCF.copy() is shallow,
-        so every scratch object would otherwise share mf_b's with_df; each
-        reset() rebinds that one shared object and the last caller wins. The
-        symptom is remote from the cause: get_j on mol_ab silently builds
-        integrals for whichever cell was reset most recently, and fails on a
-        shape mismatch several frames away.
         '''
         key = id(mol)
         mf = self._mfs.get(key)
@@ -122,11 +102,6 @@ class _FrozenEnvMB:
 
     def _vne_on(self, mol, kpt=None):
         '''V_ne of mol's own nuclei, in mol's basis: hcore - T.
-
-        Derived from get_hcore rather than computed independently, so it
-        inherits whichever method the backend used. Mixing an FFTDF V_ne[B]
-        with a MultiGrid V_ne[A] is the trap documented in
-        docs/architecture.md section 4.
         '''
         mf = self._mf_on(mol)
         if _is_cell(mol):
@@ -177,10 +152,6 @@ class _FrozenEnvMB:
 
     def e_vne_a_rho_b(self, vne_a=None):
         '''<V_ne[A]|rho_B>.
-
-        vne_a is accepted and ignored: KSCEDMixin supplies it in A's basis, and
-        this contraction needs V_ne[A] in B's basis. Ignoring it is what lets
-        KSCEDMixin stay untouched.
         '''
         if self._e_vne_a_rho_b is None:
             self._e_vne_a_rho_b = _trace_prod_spin(
@@ -219,12 +190,6 @@ class _FrozenEnvMB:
 
     def _make_evaluator(self, ni, kpt=None):
         '''rho_B(coords) at GGA order, using B's own AOs.
-
-        The periodic backends disagree about gamma-point argument shapes.
-        PySCF's single-k-point NumInt wants a (3,) kpt and a (nao, nao) density
-        matrix; GPU4PySCF's asserts kpts.ndim == 2 and works in k-point-shaped
-        arrays throughout. Probing once with a single grid point settles it
-        without hard-coding a backend name, which ages badly.
         '''
         mol_b, dm_b = self.mol_b, self.dm_b
 

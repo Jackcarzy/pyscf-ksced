@@ -23,12 +23,6 @@ def _grid_mol(mol):
     duplicated site produces NaN in every grid weight and the Fock matrix comes
     out non-finite.
 
-    Duplicated *basis functions* are harmless, because nothing is ever inverted
-    or diagonalised at the AB dimension; duplicated *grid centres* are not.
-    This matters beyond the supermolecular-limit test: extended MB, where
-    cell_a carries boundary atoms of B as ghosts, produces exactly this
-    geometry in ordinary use.
-
     Returns mol unchanged when there are no duplicates, which is the common
     monomolecular case.
     '''
@@ -40,8 +34,7 @@ def _grid_mol(mol):
         if dup is None:
             keep.append(i)
         elif mol.atom_charge(keep[dup]) == 0 and mol.atom_charge(i) != 0:
-            # Prefer the real nucleus over a coincident ghost: the Bragg radius
-            # that sizes the atomic grid comes from the element.
+            # Prefer the real nucleus because its Bragg radius sets the grid.
             keep[dup] = i
 
     if len(keep) == mol.natm:
@@ -88,14 +81,8 @@ class KSCEDMBRKS(KSCEDMBMixin):
 
         dm_a = dm
 
-        # Exchange-correlation at the total density; rho_B is added on the grid.
-        # n counts N_A + N_B because the offset numint integrates rho_t; it is
-        # reported separately and never returned to the stock grid warning.
-        #
-        # A backend whose nr_rks bypasses the density hooks can either return a
-        # wrong energy silently or crash on an unrelated-looking shape error;
-        # both routes must end in the same named refusal, so the guard runs on
-        # the exception path too.
+        # Evaluate XC at rho_A + rho_B. Validate that the backend used the
+        # density hook, including when its integration call fails.
         try:
             n, exc_t, vxc = ni_t.nr_rks(mol, self.grids, self.xc, dm_a,
                                         max_memory=max_memory)
@@ -116,7 +103,7 @@ class KSCEDMBRKS(KSCEDMBMixin):
         exc = exc_t + self.e_tnad - env.e_xc(ni, mol, self.grids, self.xc,
                                              max_memory)
 
-        # J[rho_total] in A's basis: A's own build plus the cached AB slice.
+        # Build J[rho_A + rho_B] in A's basis.
         vj_a = self.get_j(mol, dm_a, hermi)
         vj = vj_a + _like(vj_a, env.get_j_b(self, mol))
         vxc += vj

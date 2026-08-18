@@ -1,11 +1,5 @@
 '''AB-dimension reference for the monomolecular path. Test-only.
 
-Correct and backend-portable, but the per-cycle cost stays at nao_AB, so it is
-never used in production. Its value is that MB has no numerical reference
-anywhere else: the ver1/ver4 forks are supermolecular. This manufactures one by
-padding dm_a into the concatenated AB basis, calling the *stock* nr_rks, and
-slicing the A-A block back out.
-
 No production module may import this.
 '''
 

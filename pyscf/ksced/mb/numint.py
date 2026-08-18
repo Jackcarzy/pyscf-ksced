@@ -54,14 +54,7 @@ def _ksced_numint(ni, griddens):
     Two hooks, because the backends differ:
 
       CPU PySCF (mol and pbc)  density flows through _gen_rho_evaluator
-      GPU4PySCF (pbc)          nr_rks calls ni.eval_rho per block directly,
-                               and the class has no _gen_rho_evaluator at all
-
-    Only the hook the live backend actually calls is defined, chosen by probing
-    the base class. Defining just one rules out adding rho_B twice.
-
-    ni itself is not mutated: get_veff needs both the offset twin (for rho_t)
-    and the stock object (for rho_A alone).
+      GPU4PySCF (pbc)          nr_rks calls ni.eval_rho per block directly
     '''
     base = type(ni)
     state = _OffsetState()
@@ -72,7 +65,7 @@ def _ksced_numint(ni, griddens):
 
         def block_loop(self, *args, **kwargs):
             for block in base.block_loop(self, *args, **kwargs):
-                # coords is the last element for every backend's block_loop:
+                # Every supported block_loop returns coordinates last:
                 #   CPU mol  (ao, mask, weight, coords)
                 #   CPU pbc  (ao_k1, ao_k2, mask, weight, coords)
                 #   GPU pbc  (ao_ks, weight, coords)

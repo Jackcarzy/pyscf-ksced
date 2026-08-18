@@ -1,15 +1,9 @@
 '''Backend-agnostic array helpers for the monomolecular path.
 
-The plugin's supermolecular helpers decide where an array lives by testing
-``type(a).__module__.startswith('cupy')``. That is right for plain cupy arrays
-but misses GPU4PySCF's tagged arrays, whose module is
 ``gpu4pyscf.lib.cupy_helper``: the test returns False, numpy.asarray is called
 on device memory, and cupy raises
 
     TypeError: Implicit conversion to a NumPy array is not allowed.
-
-several frames from the cause. These helpers duck-type on ``.get()`` instead,
-so a tagged array is recognised as readily as a bare one.
 '''
 
 import numpy

@@ -6,11 +6,6 @@ get_hcore are inherited from KSCEDMixin: pbc/dft/uks.py assigns
 energy_elec = pyscf.dft.uks.energy_elec, exactly as the restricted module
 assigns the molecular restricted one, so a single energy expression again serves
 both domains and only get_veff is periodic-specific.
-
-The method-level nr_uks signature matches nr_rks on both PySCF and GPU4PySCF,
-so the positional call pattern below is unchanged from the restricted class --
-the 0 binds to relativity. Only the CPU module-level function carries a spin
-argument, and it is dead code.
 '''
 
 from pyscf import lib
@@ -46,9 +41,7 @@ class KSCEDPBCUKS(KSCEDMixin):
         max_memory = self.max_memory - lib.current_memory()[0]
 
         dm_a = _as_pair(dm)
-        # A restricted environment is halved into each channel here; adding the
-        # whole of rho_B to both would double it, and NumPy would broadcast that
-        # silently.
+        # Split a restricted rho_B evenly between spin channels.
         dm_t = dm_a + _as_like(dm_a, env.dm_b_for(True))
 
         # Exchange-correlation at the total density.
@@ -65,15 +58,12 @@ class KSCEDPBCUKS(KSCEDMixin):
 
         vxc = vxc + v_t_t - v_t_a
         if self.a_restricted:
-            # Fold before adding J, not after: J is spin free, so
-            # averaging it would be a no-op that obscures which terms
-            # actually carry a spin dependence.
+            # Fold spin-dependent terms before adding the spin-free J.
             vxc = _avg_spin(vxc)
         exc = exc_t + self.e_tnad - env.e_xc_pbc(ni, cell, self.grids, self.xc,
                                                  hermi, kpt, max_memory)
 
-        # J depends only on the total density, so it is built once and stays
-        # 2-D; adding it to the (2,nao,nao) vxc broadcasts it over both spins.
+        # Build the spin-free J once; broadcasting adds it to both channels.
         vj = self.get_j(cell, _spin_sum(dm_t), hermi, kpt, None)
         vxc += vj
 

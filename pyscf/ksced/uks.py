@@ -1,7 +1,6 @@
 '''Molecular KSCED for unrestricted Kohn-Sham.
 
-Mirrors ksced/rks.py term for term. Three things differ, all of them forced by
-PySCF's own UKS conventions rather than by the embedding:
+Mirrors ksced/rks.py term for term. Three things differ:
 
   - the numint driver is nr_uks, whose vmat is (2, nao, nao) and whose nelec is
     (2,) while excsum stays a scalar
@@ -44,9 +43,7 @@ class KSCEDUKS(KSCEDMixin):
         max_memory = self.max_memory - lib.current_memory()[0]
 
         dm_a = _as_pair(dm)
-        # dm_b_for(True) halves a restricted environment into each channel.
-        # Adding the whole of rho_B to both would double it, and NumPy would
-        # broadcast that without complaint.
+        # Split a restricted rho_B evenly between spin channels.
         dm_t = dm_a + _as_like(dm_a, env.dm_b_for(True))
 
         # Exchange-correlation at the total density.
@@ -62,15 +59,12 @@ class KSCEDUKS(KSCEDMixin):
 
         vxc = vxc + v_t_t - v_t_a
         if self.a_restricted:
-            # Fold before adding J, not after: J is spin free, so
-            # averaging it would be a no-op that obscures which terms
-            # actually carry a spin dependence.
+            # Fold spin-dependent terms before adding the spin-free J.
             vxc = _avg_spin(vxc)
         exc = exc_t + self.e_tnad - env.e_xc(ni, mol, self.grids, self.xc,
                                              max_memory)
 
-        # J depends only on the total density, so it is built once and stays
-        # 2-D; adding it to the (2,nao,nao) vxc broadcasts it over both spins.
+        # Build the spin-free J once; broadcasting adds it to both channels.
         vj = self.get_j(mol, _spin_sum(dm_t), hermi)
         vxc += vj
 

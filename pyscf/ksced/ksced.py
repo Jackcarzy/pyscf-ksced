@@ -14,17 +14,12 @@ def _is_cell(mol):
 
 
 def _is_gpu_array(a):
-    # Tagged GPU4PySCF arrays live in gpu4pyscf.lib.cupy_helper rather than a
-    # cupy.* module, but retain CuPy's explicit host-transfer method.
+    # GPU4PySCF tagged arrays still use CuPy's explicit host transfer.
     return not isinstance(a, numpy.ndarray) and callable(getattr(a, 'get', None))
 
 
 def _as_like(ref, arr):
     '''Return arr on the same array backend as ref.
-
-    GPU4PySCF keeps density matrices and potentials in cupy while some
-    one-electron integrals stay in numpy, and cupy refuses to broadcast against
-    a host array. Everything that mixes the two goes through here.
     '''
     if _is_gpu_array(ref) and not _is_gpu_array(arr):
         import cupy
@@ -119,13 +114,6 @@ def _kinetic_of(mol, kpt=None):
 
 def _vne_from_hcore(mf, mol, kpt=None):
     """V_ne = hcore - T, taken from the backend's own get_hcore.
-
-    Computing V_ne independently is a trap. PySCF builds it from the density
-    fitting object (FFTDF), while GPU4PySCF's get_hcore switches to
-    MultiGridNumInt whenever prod(cell.mesh) < 500**3 -- which is every system
-    here. Deriving V_ne[B] from the same get_hcore that produced V_ne[A]
-    guarantees the two are computed by the same method on whichever backend is
-    in use, which is what the embedding energy expression assumes.
     """
     if _is_cell(mol):
         h1e = mf.get_hcore(mol, kpt)
@@ -136,10 +124,6 @@ def _vne_from_hcore(mf, mol, kpt=None):
 
 class _FrozenEnv:
     '''The frozen subsystem B.
-
-    Everything the embedded calculation needs from B is served from here and
-    cached, because rho_B never changes during A's SCF. This is the only class
-    that assumes A and B share an AO basis.
     '''
 
     def __init__(self, mf_b, dm_b=None):
@@ -201,10 +185,6 @@ class _FrozenEnv:
 
     def get_j_b(self, mf, mol):
         '''J[rho_B] in the shared AO basis.
-
-        Always a single 2-D matrix. The Coulomb potential depends only on the
-        total density, and PySCF's own UKS spin-sums the density matrix before
-        building J for exactly this reason.
         '''
         if self._j_b is None:
             self._j_b = mf.get_j(mol, _spin_sum(self.dm_b), 1)
@@ -219,10 +199,6 @@ class _FrozenEnv:
 
     def e_tnad_b(self, ni, mol, grids, t_nad, max_memory):
         '''T_s^TF[rho_B], the B term of the non-additive kinetic energy.
-
-        libxc applies the Thomas-Fermi spin-scaling relation itself, so the
-        unrestricted driver gives 0.5*(T[2 rho_a] + T[2 rho_b]) with no help
-        from us, and reduces to the restricted value when the channels match.
         '''
         if self._e_tnad_b is None:
             self._e_tnad_b = self._nr(ni, self.polarized)(
@@ -252,13 +228,6 @@ class _FrozenEnv:
         the unmodified get_hcore for subsystem A. It may be the matrix itself
         or a zero-argument callable returning it; the callable form is only
         invoked on a cache miss, which is once per SCF.
-
-        That laziness matters. Building V_ne[A] means building a full hcore,
-        and this value is a constant of the embedded SCF, so evaluating it
-        eagerly on every energy_elec call rebuilt an hcore every cycle and
-        discarded it. Measured on Au120 partition 10 on an H200: the embedded
-        phase took 401 s with the eager call against 215 s for an equivalent
-        implementation that precomputes the constant.
         '''
         if self._e_vne_a_rho_b is None:
             if callable(vne_a):
@@ -275,9 +244,7 @@ class _KSCED:
 class KSCEDMixin(_KSCED):
     '''Behaviour shared by the molecular and periodic KSCED methods.
 
-    The domain-specific part is get_veff, supplied by the subclasses. Everything
-    here is common because pyscf.pbc.dft.rks assigns
-    energy_elec = mol_ks.energy_elec, so one energy expression serves both.
+    The domain-specific part is get_veff, supplied by the subclasses.
     '''
 
     _keys = {'with_env', 't_nad', 'mol_ab', 'e_tnad'}
@@ -325,16 +292,10 @@ class KSCEDMixin(_KSCED):
         e_tot_elec, e2 = super().energy_elec(dm, h1e, vhf)
 
         env = self.with_env
-        # Constant: the A nuclei attracting the frozen B electrons. For a
-        # periodic system, reuse A's own density fitting object so the mesh
-        # matches the one the SCF runs on.
-        #
-        # Passed unevaluated. _vne_a() builds a full hcore, and the environment
-        # caches the contraction after the first cycle, so calling it here
-        # would rebuild that hcore every cycle only to discard it.
+        # Attraction between A's nuclei and B's frozen electrons. Pass the
+        # callable so the environment can cache its first evaluation.
         e_vne_a_rho_b = env.e_vne_a_rho_b(self._vne_a)
-        # The second half of J_AB. get_veff already contributed the first half
-        # through ecoul = 0.5 * <dm_a | J[rho_total]>.
+        # Add the half of J_AB not included in get_veff's Coulomb energy.
         e_coul_ab_half = _trace_prod_spin(
             env.get_j_b(self, self.mol), dm) * .5
 
@@ -365,11 +326,6 @@ def _is_pbc(mf):
 
 def _check_numint(mf):
     '''KSCED needs the plain grid-based NumInt; MultiGrid takes a different path.
-
-    The multigrid class to look for moved between PySCF releases: 2.5 routes
-    through a density fitting object, MultiGridFFTDF, while 2.14 routes through
-    a numint, MultiGridNumInt. Probe for whichever exists so the plugin keeps
-    working across both, which the Stage 1 and Stage 2 comparisons rely on.
     '''
     if not _is_pbc(mf):
         return
@@ -393,10 +349,6 @@ def _check_numint(mf):
 
 def _needs_uks_machinery(mf, env):
     '''True when the unrestricted classes are required.
-
-    Either subsystem being polarised is enough. A polarised B *promotes* a
-    restricted A into the unrestricted machinery: v_xc and v_T are then
-    spin dependent, and A is fed the average of the two channels.
 
     That average is not an approximation. With rho_a = rho_b = rho_A/2 held by
     A's own restrictedness,
@@ -431,26 +383,12 @@ def _sb_class(mf, env):
 
 def _is_unrestricted(mf):
     '''True when mf carries separate alpha and beta orbitals.
-
-    Uses istype, not isinstance. pyscf.pbc.scf.uhf.UHF derives from
-    pbc.scf.hf.SCF and copies the molecular UHF methods by assignment rather
-    than inheriting them, so isinstance(mf, pyscf.scf.uhf.UHF) is **False for a
-    periodic UKS object** -- measured, not assumed. That test would route a
-    periodic UKS silently into the restricted class and produce a converged
-    wrong answer. istype walks class names through the MRO and is correct on
-    all four backends.
     '''
     return bool(mf.istype('UHF'))
 
 
 def _reject_restricted_open_shell(mf, what):
     '''ROHF/ROKS is neither of the two cases the energy expression covers.
-
-    ROKS.get_veff delegates to the unrestricted one and make_rdm1 returns a
-    (2,nao,nao) density, but the Fock build stays restricted. istype('UHF') is
-    False for it, so without this check it would take the restricted path with
-    a spin-resolved density matrix -- which nr_rks silently reads as two
-    separate density matrices rather than two spin channels.
     '''
     if mf.istype('ROHF'):
         raise NotImplementedError(
@@ -462,26 +400,6 @@ def _reject_restricted_open_shell(mf, what):
 
 def _reject_kpts(mf, what):
     '''KSCED is gamma-point only, and a k-point object must be refused here.
-
-    The spin dispatch reads a density matrix's rank: _is_polarized is
-    dm.ndim == 3. A k-point density matrix carries its own leading axis, so
-    both k-point classes are misread, in opposite directions:
-
-      KRKS  (nkpts, nao, nao)     rank 3, mistaken for alpha/beta
-      KUKS  (2, nkpts, nao, nao)  rank 4, mistaken for restricted -- and
-                                  istype('UHF') is False for KUKS as well, so
-                                  nothing else catches it either
-
-    Both happen to die downstream today, on a tuple unpack and on a complex
-    cast respectively. That is luck, not a guarantee: it depends on nkpts and
-    on the k-point density being complex, and neither is a property KSCED
-    controls. Before the unrestricted work a 3-D dm_b was stopped by
-    _trace_prod's 2-D einsum; _trace_prod_spin now spin-sums instead, so that
-    incidental net is gone and this one replaces it deliberately.
-
-    Checked on the object rather than the density matrix, so it fires at
-    embed() with a message naming the cause instead of somewhere in the third
-    SCF cycle.
     '''
     if mf.istype('KSCF'):
         raise NotImplementedError(
@@ -493,10 +411,6 @@ def _reject_kpts(mf, what):
 
 def _looks_supermolecular(mol_a, mol_b):
     '''True when A and B were built in one shared basis with ghost atoms.
-
-    Keys on nao equality and identical geometry. An extended-MB cell -- A's
-    atoms plus a few of B's as ghosts -- never satisfies nao_a == nao_b, so this
-    guard does not close the door on that.
     '''
     if mol_a.nao != mol_b.nao:
         return False
@@ -601,8 +515,6 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
                     else mb_rks.KSCEDMBRKS)
         obj = base(mf, env, env.mol_ab)
 
-    # The synthesised class must not reuse the mixin's name, or the MRO reads
-    # "KSCEDRKS <- KSCEDRKS" and tracebacks become ambiguous. pyscf.solvent
-    # avoids this the same way, by naming from the component rather than the mixin.
+    # Use a distinct name to keep the synthesized MRO and tracebacks clear.
     name = mf.__class__.__name__ + 'WithKSCED'
     return lib.set_class(obj, (base, mf.__class__), name)

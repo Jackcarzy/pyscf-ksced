@@ -8,12 +8,7 @@ grid differently:
   CPU pbc   same differing-partition hazard
   GPU pbc   ni.block_loop(..., sort_grids=True) permutes the points
   GPU mol   one ni.block_loop per device inside a ThreadPoolExecutor, over
-            disjoint ranges from gen_grid_range -- concurrent, and not starting
-            from zero
-
-A table keyed by position cannot serve all four. Keying on the coordinates
-themselves and filling lazily on miss is correct under every one of them: an
-unseen partition costs one extra evaluation, never a wrong density.
+            disjoint ranges from gen_grid_range
 '''
 
 import threading
@@ -27,9 +22,6 @@ from pyscf.ksced.mb.arrays import to_host as _to_host
 
 def _block_key(coords):
     '''Order-independent identity of a grid block.
-
-    First point, last point and length. Collisions are checked on lookup, so a
-    false match raises rather than returning the wrong density.
     '''
     c = _to_host(coords)
     return (c.shape[0],
@@ -38,7 +30,7 @@ def _block_key(coords):
 
 
 class _GridDensity:
-    '''Memoised rho_B(coords), stored at GGA order.
+    '''Memoized rho_B(coords), stored at GGA order.
 
     Restricted densities have shape (4,n); unrestricted densities have shape
     (2,4,n), with the leading axis holding alpha and beta.
@@ -93,9 +85,7 @@ class _GridDensity:
                     'density for a block it was not computed on')
             return rho
 
-        # Keep the density on whichever backend produced it. Calling
-        # numpy.asarray here would raise on cupy: "Implicit conversion to a
-        # NumPy array is not allowed."
+        # Keep the density on its original backend; CuPy forbids implicit conversion.
         rho = self.evaluator(coords)
         if not hasattr(rho, 'ndim'):
             rho = numpy.asarray(rho)
