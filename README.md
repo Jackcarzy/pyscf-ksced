@@ -27,9 +27,10 @@ export PYSCF_EXT_PATH=/path/to/pyscf-ksced
 
 - `basis_mode='S'`: subsystems A and B share a supermolecular AO basis built
   with ghost atoms. Their density matrices have the same dimensions.
-- `basis_mode='M'`: each subsystem uses only its own monomolecular basis functions. This
-  reduces the embedded SCF dimension. For periodic calculations, A and B must use the same lattice and
-mesh. Only gamma-point calculations are supported.
+- `basis_mode='M'`: each subsystem uses only its own monomolecular basis
+  functions. This reduces the embedded SCF dimension. For periodic
+  calculations, A and B must use the same lattice and mesh. Only gamma-point
+  calculations are supported.
 
 ## Quick start
 
@@ -82,7 +83,8 @@ print(mf_a.e_tot)
 - `examples/01_mol_Super_GPU`: CH3SH+Au10 in Au10
 - `examples/02_pbc_Super_GPU`: NH3+Au10 in Au110
 - `examples/03_pbc_Mono_GPU`: NH3+Au10 in Au110
-GPU require GPU4PySCF .
+
+The GPU examples require GPU4PySCF.
 
 ## Monkey-patches
 
