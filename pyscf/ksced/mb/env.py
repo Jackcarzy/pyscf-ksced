@@ -14,7 +14,7 @@ from pyscf.lib import logger
 from pyscf.ksced.ksced import (_is_cell, _kinetic_of, _spin_sum, _stack_like,
                                _trace_prod_spin)
 from pyscf.ksced.mb.arrays import to_host as _host
-from pyscf.ksced.mb.griddens import _GridDensity
+from pyscf.ksced.mb.griddens import _GridDensity, _MeshDensity
 from pyscf.ksced.mb.meshdata import _MeshData, is_fft_df as _is_fft_df
 from pyscf.ksced.mb.numint import _ksced_numint
 
@@ -382,16 +382,36 @@ class _FrozenEnvMB:
         '''rho_B(coords) at GGA order, using B's own AOs.'''
         return density_evaluator(ni, self.mol_b, self.dm_b, kpt)
 
+    def _make_griddens(self, ni, kpt=None):
+        """rho_B on the quadrature grid, gathering from the mesh when it can.
+
+        On the periodic path the KS grid and the fitting object are both
+        UniformGrids over the same cell and mesh, so rho_B is collocated once
+        for the Poisson solve and the exchange-correlation offset gathers from
+        that array instead of evaluating B's AOs a second time. Gathering needs
+        no memoisation, which is the point: the cache key was the last thing in
+        the offset that had to read device coordinates on every block.
+
+        Everything else -- the molecular path, a Becke grid in a periodic
+        calculation, a fitting scheme with no mesh -- gets the memoised
+        evaluator, and pays the key it is worth.
+        """
+        ao_eval = self._make_evaluator(ni, kpt)
+        mesh = self._mesh_data(ni, kpt)
+        if mesh is None:
+            return _GridDensity(ao_eval)
+        return _MeshDensity(mesh, ao_eval)
+
     def numint_for(self, ni, kpt=None):
         '''The offset twin of ni.
 
-        Two lifetimes, deliberately separate. _griddens holds rho_B on the grid
-        and costs N_grid * nao_B^2 to fill; the wrapper around it is a shallow
-        copy of ni and costs nothing. A new A brings its own ni, so reset()
-        drops the wrapper and keeps the density.
+        Two lifetimes, deliberately separate. _griddens is bound to B's grid
+        data, which survives a displacement of A; the wrapper around it is a
+        shallow copy of ni and costs nothing. A new A brings its own ni, so
+        reset() drops the wrapper and keeps the density.
         '''
         if self._griddens is None:
-            self._griddens = _GridDensity(self._make_evaluator(ni, kpt))
+            self._griddens = self._make_griddens(ni, kpt)
         if self._numint is None:
             self._numint = _ksced_numint(ni, self._griddens)
         return self._numint

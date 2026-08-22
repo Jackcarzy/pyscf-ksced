@@ -46,6 +46,11 @@ from pyscf.ksced.mb.arrays import to_host as _host
 # four components, so a chunk costs 4 * blk * nao_B * 8 bytes.
 _CHUNK_BYTES = 512 << 20
 
+# A point counts as this mesh's own when its fractional coordinate lands within
+# this of an integer. The mesh's own points sit inside 1.4e-14; points from any
+# other quadrature miss by order one, so the test is not delicate.
+_ON_MESH_TOL = 1e-6
+
 
 def is_fft_df(df):
     '''True for the plane-wave fitting objects whose J this module can split.
@@ -156,6 +161,44 @@ class _MeshData:
                 out = _like(block, numpy.zeros(shape))
             out[..., p0:p1] = block
         return out
+
+    def rho_at(self, coords):
+        """rho_B at coords, gathered from the stored mesh values.
+
+        A uniform grid point carries its own index. get_uniform_grids lays the
+        points out as cartesian_prod(fftfreq(n) for n in mesh) @ lattice, so the
+        fractional coordinate times the mesh recovers the triple exactly and the
+        linear position follows in C order -- verified to 1.4e-14 over a
+        918,000-point mesh, wrap-around edge included.
+
+        Every step runs on whatever backend holds the coordinates, and the only
+        thing that comes back to the host is the single scalar deciding whether
+        the points are the mesh's own. That is the whole difference between this
+        and reading the block: the caller runs it once per grid block per SCF
+        iteration, so a transfer here is a transfer fifty times over.
+
+        The gather returns points in whatever order it was handed them, which is
+        what makes it safe for gpu4pyscf, whose exchange-correlation loop sorts
+        the grid.
+
+        Returns None when the points are not this mesh's own -- a Becke grid in
+        a periodic calculation, say -- so the caller can fall back to evaluating
+        B's AOs.
+        """
+        if getattr(coords, 'ndim', 0) != 2 or coords.shape[1] != 3:
+            return None
+        mesh = numpy.asarray(self.df.mesh)
+        # Fold the mesh scaling into the 3x3, so the device does one matmul.
+        to_index = numpy.linalg.inv(self.df.cell.lattice_vectors()) * mesh
+        f = coords.dot(_like(coords, to_index))
+        ijk = f.round()
+        if float(abs(f - ijk).max()) > _ON_MESH_TOL:
+            return None
+
+        ijk = ijk.astype(numpy.int64) % _like(coords, mesh)
+        idx = (ijk[:, 0] * int(mesh[1]) + ijk[:, 1]) * int(mesh[2]) + ijk[:, 2]
+        rho = self.rho()
+        return rho[..., _like(rho, idx)]
 
     def vj(self):
         '''v_J^B(r), quadrature weight folded in. One Poisson solve, cached.'''
