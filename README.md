@@ -1,56 +1,29 @@
 # pyscf-ksced
 
-`pyscf-ksced` adds frozen-density subsystem embedding to
-[PySCF](https://pyscf.org). It solves the Kohn-Sham equations for subsystem A
-in the frozen electron density of subsystem B.
+Frozen-density subsystem embedding for [PySCF](https://pyscf.org).
 
-The package supports molecular and gamma-point periodic calculations with
-restricted or unrestricted Kohn-Sham methods.
+`pyscf-ksced` solves the Kohn-Sham equations for one subsystem in the frozen
+electron density of another. It supports restricted and unrestricted molecular
+calculations, plus gamma-point periodic calculations.
 
-## Requirements
+## Install
 
-| | Version |
-|---|---|
-| Python | 3.9 or newer |
-| PySCF | 2.5 or newer, developed against 2.14.0 |
-| NumPy | 1.13 or newer |
-| GPU4PySCF | optional, for the GPU examples |
-
-Development runs against PySCF 2.14.0, with 2.5.0 kept as a reference build
-for equivalence checks. Those two releases bracket an API change: multigrid
-acceleration moved from `MultiGridFFTDF` to `MultiGridNumInt`, and the numint
-density-evaluator interface changed. The package probes for whichever is
-present, so one install works across the range. Multigrid itself is not
-supported: build the KS object without it.
-
-The GPU paths additionally need CuPy and a visible CUDA device.
-
-## Installation
-
-Install the package in editable mode:
+Requires Python 3.9+ and PySCF 2.5+.
 
 ```bash
 pip install -e .
 ```
 
-You can also load the package without installing it:
+Alternatively, use the package without installing it:
 
 ```bash
 export PYSCF_EXT_PATH=/path/to/pyscf-ksced
 ```
 
-## Basis modes
+GPU examples also require GPU4PySCF, CuPy, and a CUDA device. PySCF multigrid
+objects are not supported.
 
-`ksced.embed()` supports two basis representations:
-
-- `basis_mode='S'`: subsystems A and B share a supermolecular AO basis built
-  with ghost atoms. Their density matrices have the same dimensions.
-- `basis_mode='M'`: each subsystem uses only its own monomolecular basis
-  functions. This reduces the embedded SCF dimension. For periodic
-  calculations, A and B must use the same lattice and mesh. Only gamma-point
-  calculations are supported.
-
-## Quick start
+## Usage
 
 This example embeds H2O in the frozen density of Li+ using a shared basis:
 
@@ -58,57 +31,63 @@ This example embeds H2O in the frozen density of Li+ using a shared basis:
 from pyscf import dft, gto, ksced
 
 mol_a = gto.M(
-    verbose = 4,
-    atom = '''
-        o    0    0.       0.
-        h    0    -0.757   0.587
-        h    0    0.757    0.587
-        x-li   0    0        -2''',
-    basis = '6-31g')
+    atom="""
+        O      0.000  0.000   0.000
+        H      0.000 -0.757   0.587
+        H      0.000  0.757   0.587
+        ghost-Li 0.000 0.000 -2.000
+    """,
+    basis="6-31g",
+)
 
 mol_b = gto.M(
-    verbose = 4,
-    atom = '''
-        x-o    0    0.       0.
-        x-h    0    -0.757   0.587
-        x-h    0    0.757    0.587
-          li   0    0        -2''',
-    charge = 1,
-    basis = '6-31g')
+    atom="""
+        ghost-O  0.000  0.000  0.000
+        ghost-H  0.000 -0.757  0.587
+        ghost-H  0.000  0.757  0.587
+        Li       0.000  0.000 -2.000
+    """,
+    charge=1,
+    basis="6-31g",
+)
 
 mol_ab = gto.M(
-    verbose = 4,
-    atom = '''
-        o    0    0.       0.
-        h    0    -0.757   0.587
-        h    0    0.757    0.587
-        li   0    0        -2''',
-    charge = 1,
-    basis = '6-31g')
+    atom="""
+        O   0.000  0.000  0.000
+        H   0.000 -0.757  0.587
+        H   0.000  0.757  0.587
+        Li  0.000  0.000 -2.000
+    """,
+    charge=1,
+    basis="6-31g",
+)
 
-mf_b = dft.RKS(mol_b, xc='PBE').run()
-mf_a = ksced.embed(dft.RKS(mol_a, xc='PBE'), mf_b, mol_ab=mol_ab)
+mf_b = dft.RKS(mol_b, xc="PBE").run()
+mf_a = ksced.embed(
+    dft.RKS(mol_a, xc="PBE"), mf_b, mol_ab=mol_ab, basis_mode="S"
+)
 mf_a.kernel()
 
-print(mf_a.e_tot)  
-# `mf_a.e_tot` contains the embedded total energy and 
-# `mf_a.e_tnad` contains the non-additive kinetic energy.
+print(mf_a.e_tot)   # embedded total energy
+print(mf_a.e_tnad)  # non-additive kinetic energy
 ```
 
-## Main options and examples
+### Basis modes
 
-- `examples/00_mol_Super_CPU`: H2O in Li+
-- `examples/01_mol_Super_GPU`: CH3SH+Au10 in Au10
-- `examples/02_pbc_Super_GPU`: NH3+Au10 in Au110
-- `examples/03_pbc_Mono_GPU`: NH3+Au10 in Au110
+- `basis_mode="S"` uses a shared supermolecular basis with ghost atoms.
+- `basis_mode="M"` uses each subsystem's own basis, reducing the embedded SCF
+  dimension.
 
-The GPU examples require GPU4PySCF.
+For repeated periodic calculations where only subsystem A's coordinates move,
+reuse the frozen environment:
 
-## Monkey-patches
+## Examples
 
-Same physics as the plugin, assembled by assigning plain functions to instance attributes. 
-Nothing in PySCF is modified. Can be used right away.
+- `examples/00_mol_Super_CPU`: molecular, shared basis, CPU
+- `examples/01_mol_Super_GPU`: molecular, shared basis, GPU
+- `examples/02_pbc_Super_GPU`: periodic, shared basis, GPU
+- `examples/03_pbc_Mono_GPU`: periodic, separate bases, GPU
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+[Apache-2.0](LICENSE)

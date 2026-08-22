@@ -434,7 +434,66 @@ def _check_mb_preconditions(mf, mf_b):
             % (tuple(cell_a.mesh), tuple(cell_b.mesh)))
 
 
-def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
+def frozen_env(mf_b, mol_a, dm_b=None, mol_ab=None, basis_mode='M'):
+    '''A reusable frozen environment for subsystem B.
+
+    Build one of these, then hand it to embed() at every geometry of A. The
+    parts of B that do not depend on A -- rho_B on the quadrature grid, and on a
+    periodic mesh the Hartree potential v_J[rho_B] -- are then built once for
+    the trajectory instead of once per point.
+
+        env = ksced.frozen_env(mf_b, cell_a)
+        for coords in trajectory:
+            mf_a = ksced.embed(dft.RKS(build(coords), xc='PBE'), mf_b, env=env)
+            mf_a.kernel()
+
+    Args:
+        mf_b : converged RKS object for subsystem B.
+        mol_a : Mole or Cell for subsystem A. Later geometries must keep the
+            same atom set, basis, lattice and mesh; only the coordinates move.
+
+    Kwargs:
+        dm_b, mol_ab : as for embed().
+        basis_mode : 'M' only. The supermolecular basis has nothing to reuse:
+            rho_B is carried by ghost functions centred on A's atoms, so it is
+            not independent of A's geometry in the first place.
+    '''
+    if basis_mode != 'M':
+        raise ValueError(
+            "frozen_env() is for basis_mode='M'. In the supermolecular basis "
+            "rho_B is expanded in ghost functions centred on A's atoms, so it "
+            "changes when A moves and there is nothing to carry between "
+            "geometries.")
+    from pyscf.ksced.mb.env import _FrozenEnvMB
+    return _FrozenEnvMB(mf_b, mol_a, dm_b, mol_ab)
+
+
+def _check_reusable_env(env, mf_b, dm_b, basis_mode):
+    '''Vet an environment handed back to embed().
+
+    The environment carries B's frozen density; taking a second one from dm_b or
+    a mismatched mf_b would leave two disagreeing copies, so both are refused
+    rather than resolved by precedence.
+    '''
+    from pyscf.ksced.mb.env import _FrozenEnvMB
+    if not isinstance(env, _FrozenEnvMB):
+        raise TypeError(
+            'env must come from ksced.frozen_env(); got %r' % (type(env),))
+    if basis_mode == 'S':
+        raise ValueError(
+            "env implies basis_mode='M'; 'S' was requested. A supermolecular "
+            'environment has nothing to reuse between geometries.')
+    if env.mf_b is not mf_b:
+        raise ValueError(
+            'env was built from a different subsystem B than the one passed to '
+            'embed(). Pass the same mf_b, or build a new environment.')
+    if dm_b is not None:
+        raise ValueError(
+            'dm_b and env both carry the frozen density. Give dm_b to '
+            'frozen_env() when the environment is built, not to embed().')
+
+
+def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode=None, env=None,
           _bypass_sb_guard=False):
     '''Attach a frozen KSCED environment to a restricted KS object.
 
@@ -451,7 +510,10 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
         basis_mode : 'S' for the supermolecular basis, where A and B share one
             AO basis built with ghost atoms. 'M' for the monomolecular basis,
             where A carries only A's functions and B only B's -- which is what
-            makes the embedded SCF smaller than the whole system.
+            makes the embedded SCF smaller than the whole system. Defaults to
+            'S', or to 'M' when env is given.
+        env : an environment from frozen_env(), rebound to this geometry of A
+            rather than rebuilt. Implies basis_mode='M'.
         _bypass_sb_guard : test hook. Lets the 'M' machinery run on ghost-built
             cells so that it can be compared against the 'S' path. Never set in
             production code.
@@ -463,10 +525,17 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
     from pyscf.ksced import rks as ksced_rks
     from pyscf.ksced import pbcrks as ksced_pbcrks
 
+    if basis_mode is None:
+        # A reusable environment is monomolecular by construction; asking for
+        # 'S' alongside one is a contradiction, and _check_reusable_env says so.
+        basis_mode = 'S' if env is None else 'M'
     if basis_mode not in ('S', 'M'):
         raise ValueError(
             "basis_mode must be 'S' (supermolecular) or 'M' (monomolecular); "
             "got %r" % (basis_mode,))
+
+    if env is not None:
+        _check_reusable_env(env, mf_b, dm_b, basis_mode)
 
     _reject_restricted_open_shell(mf, 'subsystem A')
     _reject_restricted_open_shell(mf_b, 'subsystem B')
@@ -495,7 +564,10 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode='S',
                 "atoms only and B from B's only, or use basis_mode='S'.")
         _check_mb_preconditions(mf, mf_b)
 
-        env = _FrozenEnvMB(mf_b, mf.mol, dm_b, mol_ab)
+        if env is None:
+            env = _FrozenEnvMB(mf_b, mf.mol, dm_b, mol_ab)
+        else:
+            env.rebind(mf.mol, mol_ab)
         if isinstance(mf, _KSCED):
             mf.with_env = env
             mf.mol_ab = env.mol_ab
