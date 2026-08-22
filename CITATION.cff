@@ -1,0 +1,9 @@
+cff-version: 1.0.0
+message: "If you use this software, please cite it as below."
+title: "pyscf-ksced"
+version: 1.0.0
+authors:
+  - family-names: "Shao"
+    given-names: "Chengyuan"
+date-released: 2026-08-20
+repository-code: "https://github.com/Jackcarzy/pyscf-ksced"
