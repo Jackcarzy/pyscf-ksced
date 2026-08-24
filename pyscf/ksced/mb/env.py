@@ -249,20 +249,44 @@ class _FrozenEnvMB:
     def _nr(self, ni):
         return ni.nr_uks if self.polarized else ni.nr_rks
 
+    def _build_vne_cross_terms(self, kpt=None):
+        '''Fill both cross terms from a single V_ne[AB] build.
+
+        The two are opposite diagonal blocks of the same matrix, less each
+        subsystem's own, so one build serves both. Building it once per
+        accessor -- as this did before -- doubled the only nao_AB-dimension
+        cost left on the monomolecular path.
+
+        Two alternatives were built and measured slower, both reverted:
+
+        Scaffolds carrying one subsystem's shells each -- test/15_Au20_vne
+        folders 5 and 9, 54.9 s for this against 65.3 s for two scaffold builds.
+        Four builds' fixed costs outweigh 2(nao_A^2 + nao_B^2) against nao_AB^2
+        whenever A and B are of similar size.
+
+        Collocating v_ne^B(r) on the mesh and contracting it against A's AOs --
+        test/16_Au20_part04_repeats, 1.06x slower on CPU and 5.3x on GPU over
+        three repeats. The cost is the non-local projector term, N_grid *
+        nproj_B * nao_A, which shrinking nao_A does not touch; and on GPU it
+        moves work off the device, since get_hcore there is MultiGrid.
+        '''
+        n = self.nao_a
+        vne_ab = self._vne_on(self.mol_ab, kpt)
+        if self._vne_b is None:
+            self._vne_b = vne_ab[:n, :n] - self._vne_on(self.mol_a, kpt)
+        if self._vne_a_in_b is None:
+            self._vne_a_in_b = vne_ab[n:, n:] - self._vne_on(self.mol_b, kpt)
+
     def get_vne_b(self, mol=None, kpt=None):
         '''V_ne[B] in A's basis: the A-A block of V_ne_ab, less A's own.'''
         if self._vne_b is None:
-            n = self.nao_a
-            self._vne_b = (self._vne_on(self.mol_ab, kpt)[:n, :n]
-                           - self._vne_on(self.mol_a, kpt))
+            self._build_vne_cross_terms(kpt)
         return self._vne_b
 
     def _vne_a_in_bs_basis(self, kpt=None):
         '''V_ne[A] in B's basis: the B-B block of V_ne_ab, less B's own.'''
         if self._vne_a_in_b is None:
-            n = self.nao_a
-            self._vne_a_in_b = (self._vne_on(self.mol_ab, kpt)[n:, n:]
-                                - self._vne_on(self.mol_b, kpt))
+            self._build_vne_cross_terms(kpt)
         return self._vne_a_in_b
 
     def get_j_b(self, mf=None, mol=None):
