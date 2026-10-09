@@ -192,6 +192,7 @@ class _FrozenEnvMB:
         self._j_b = None
         self._e_vne_a_rho_b = None
         self._numint = None
+        self._gpu_mol_numint = None
         self._mfs = {}
         if not self._b_side_persistent:
             self._reset_b_side()

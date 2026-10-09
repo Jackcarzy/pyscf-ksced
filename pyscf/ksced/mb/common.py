@@ -14,6 +14,12 @@ from pyscf.ksced.ksced import KSCEDMixin
 class KSCEDMBMixin(KSCEDMixin):
     '''KSCEDMixin plus the reporting the monomolecular path needs.'''
 
+    def reset(self, mol=None):
+        if mol is not None:
+            self.with_env.rebind(mol)
+            self.mol_ab = self.with_env.mol_ab
+        return super().reset(mol)
+
     def dump_flags(self, verbose=None):
         super().dump_flags(verbose)
         env = self.with_env
