@@ -263,6 +263,37 @@ class KSCEDMixin(_KSCED):
             obj.__dict__.pop(key, None)
         return obj
 
+    def energy_potential(self):
+        '''Conservative embedded energy, in Hartree, at the converged state.
+
+        At finite electronic temperature this is E - sigma*S, not the
+        internal energy or the extrapolated zero-temperature energy. Frozen
+        B's self energy is a geometry-independent constant and is omitted.
+        '''
+        if not self.converged:
+            raise RuntimeError('Converge the embedded SCF before requesting its energy')
+        energy = float(self.e_tot)
+        if getattr(self, 'sigma', 0) and getattr(self, 'smearing_method', None):
+            if getattr(self, 'mu0', None) is not None:
+                raise NotImplementedError('KSCED forces require fixed electron number, not fixed mu0')
+            if self.entropy is None:
+                raise RuntimeError('Smearing entropy is unavailable; rerun the SCF')
+            energy -= float(self.sigma * self.entropy)
+        return energy
+
+    def nuc_grad_method(self):
+        '''Analytic frozen-B A gradients for monomolecular KSCED.'''
+        from pyscf.ksced.mb.env import _FrozenEnvMB
+        if not isinstance(self.with_env, _FrozenEnvMB):
+            raise NotImplementedError("KSCED gradients require basis_mode='M'")
+        if _is_cell(self.mol):
+            from pyscf.ksced.mb.grad import Gradients
+        else:
+            from pyscf.ksced.mb.grad_mol import Gradients
+        return Gradients(self)
+
+    Gradients = nuc_grad_method
+
     def dump_flags(self, verbose=None):
         super().dump_flags(verbose)
         logger.info(self, 'KSCED non-additive kinetic functional = %s', self.t_nad)

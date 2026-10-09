@@ -41,6 +41,7 @@ import numpy
 
 from pyscf.ksced.mb.arrays import like as _like
 from pyscf.ksced.mb.arrays import to_host as _host
+from pyscf.ksced.ksced import _stack_like
 
 # AO values held per chunk while the mesh density is collocated. deriv=1 gives
 # four components, so a chunk costs 4 * blk * nao_B * 8 bytes.
@@ -237,7 +238,8 @@ class _MeshData:
 
         if rho.ndim == 3:                           # unrestricted environment
             ra, rb = rows(rho[0]), rows(rho[1])
-            exc = ni.eval_xc_eff(xc, (ra, rb), 1, xctype=xctype, spin=1)[0]
+            exc = ni.eval_xc_eff(xc, _stack_like(ra, (ra, rb)), 1,
+                                xctype=xctype, spin=1)[0]
             total = den(ra).dot(exc) + den(rb).dot(exc)
         else:
             r = rows(rho)

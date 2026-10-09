@@ -8,7 +8,7 @@ slice rather than from one build at the shared dimension.
 
 import numpy
 
-from pyscf import dft, lib
+from pyscf import lib
 from pyscf.ksced.ksced import _trace_prod, _tag_array
 from pyscf.ksced.mb.arrays import like as _like
 from pyscf.ksced.mb.common import KSCEDMBMixin
@@ -57,10 +57,8 @@ class KSCEDMBRKS(KSCEDMBMixin):
         B's nuclei are. Grid cost scales with atom count, not nao squared, so
         using the AB grid costs little and keeps the nao_A speedup intact.
         '''
-        if self.grids.coords is None:
-            self.grids = dft.gen_grid.Grids(_grid_mol(self.with_env.mol_ab))
-            self.grids.build()
-        return self.grids
+        from pyscf.ksced.mb.molecular import initialize_grids
+        return initialize_grids(self)
 
     def get_veff(self, mol=None, dm=None, dm_last=None, vhf_last=None, hermi=1):
         if mol is None:
@@ -76,32 +74,36 @@ class KSCEDMBRKS(KSCEDMBMixin):
         self.initialize_grids(mol, dm)
 
         env = self.with_env
-        ni_t = env.numint_for(ni)
         max_memory = self.max_memory - lib.current_memory()[0]
 
         dm_a = dm
 
-        # Evaluate XC at rho_A + rho_B. Validate that the backend used the
-        # density hook, including when its integration call fails.
-        try:
-            n, exc_t, vxc = ni_t.nr_rks(mol, self.grids, self.xc, dm_a,
+        from pyscf.ksced.mb.molecular import is_gpu, gpu_functionals
+        if is_gpu(self):
+            exc, vxc = gpu_functionals(self, dm_a)
+        else:
+            ni_t = env.numint_for(ni)
+            # Evaluate XC at rho_A + rho_B. Validate that the backend used the
+            # density hook, including when its integration call fails.
+            try:
+                n, exc_t, vxc = ni_t.nr_rks(mol, self.grids, self.xc, dm_a,
+                                            max_memory=max_memory)
+            except Exception as exc:
+                self._assert_env_density_entered(cause=exc)
+                raise
+            self._assert_env_density_entered()
+            self._log_electron_counts(n)
+            # Non-additive kinetic energy: T[rho] - T[rho_A] - T[rho_B].
+            _, t_t, v_t_t = ni_t.nr_rks(mol, self.grids, self.t_nad, dm_a,
                                         max_memory=max_memory)
-        except Exception as exc:
-            self._assert_env_density_entered(cause=exc)
-            raise
-        self._assert_env_density_entered()
-        self._log_electron_counts(n)
-        # Non-additive kinetic energy: T[rho] - T[rho_A] - T[rho_B].
-        _, t_t, v_t_t = ni_t.nr_rks(mol, self.grids, self.t_nad, dm_a,
-                                    max_memory=max_memory)
-        _, t_a, v_t_a = ni.nr_rks(mol, self.grids, self.t_nad, dm_a,
-                                  max_memory=max_memory)
-        t_b = env.e_tnad_b(ni, mol, self.grids, self.t_nad, max_memory)
-        self.e_tnad = t_t - t_a - t_b
+            _, t_a, v_t_a = ni.nr_rks(mol, self.grids, self.t_nad, dm_a,
+                                      max_memory=max_memory)
+            t_b = env.e_tnad_b(ni, mol, self.grids, self.t_nad, max_memory)
+            self.e_tnad = t_t - t_a - t_b
 
-        vxc = vxc + v_t_t - v_t_a
-        exc = exc_t + self.e_tnad - env.e_xc(ni, mol, self.grids, self.xc,
-                                             max_memory)
+            vxc = vxc + v_t_t - v_t_a
+            exc = exc_t + self.e_tnad - env.e_xc(ni, mol, self.grids, self.xc,
+                                                 max_memory)
 
         # Build J[rho_A + rho_B] in A's basis.
         vj_a = self.get_j(mol, dm_a, hermi)
