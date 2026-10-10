@@ -136,59 +136,6 @@ gradient_ainb_on_a = mf_ainb.nuc_grad_method().kernel()  # Hartree/Bohr
 forces_ainb_on_a = -gradient_ainb_on_a
 ```
 
-The equations below use the restricted, spin-unpolarized case.
-For a Cartesian coordinate R<sub>A</sub> of an atom in A, the periodic working equation is:
-
-<pre>
-g<sub>A</sub> = Tr[P<sup>A</sup> ∂<sub>A</sub>(T<sup>A</sup> + V<sup>A</sup> + V<sup>B</sup>)]
-    + Tr[P<sup>B</sup> ∂<sub>A</sub> V<sup>A</sup>] − Tr[W<sup>A</sup> ∂<sub>A</sub> S<sup>A</sup>]
-    + ∂<sub>A</sub> E<sub>nn</sub><sup>AB</sup>
-    + ∫<sub>cell</sub> { (v<sub>J,A</sub> + v<sub>J,B</sub>) ∂<sub>A</sub> ρ<sub>A</sub>
-              + (v<sub>xc</sub>[ρ<sub>A</sub> + ρ<sub>B</sub>]
-                     + v<sub>T</sub>[ρ<sub>A</sub> + ρ<sub>B</sub>] − v<sub>T</sub>[ρ<sub>A</sub>]) · ∂<sub>A</sub> q<sub>A</sub> } dr
-
-q<sub>A</sub> = (ρ<sub>A</sub>, ∂<sub>x</sub>ρ<sub>A</sub>, ∂<sub>y</sub>ρ<sub>A</sub>, ∂<sub>z</sub>ρ<sub>A</sub>)
-W<sup>A</sup><sub>μν</sub> = Σ<sub>p</sub> f<sub>p</sub> ε<sub>p</sub> C<sub>μp</sub> C*<sub>νp</sub>
-F<sub>A</sub> = −g<sub>A</sub>
-</pre>
-
-Here ∂<sub>A</sub> means differentiation with respect to R<sub>A</sub> at fixed AO density
-matrices. Operator derivatives include the moving A basis and nuclear or
-pseudopotential centers. S<sup>A</sup> is the overlap matrix, and W<sup>A</sup> is the
-energy-weighted density matrix formed from the embedded orbitals, energies
-and occupations. The term −Tr[W<sup>A</sup> ∂<sub>A</sub> S<sup>A</sup>] is the Pulay contribution.
-The occupation f<sub>p</sub> is the number of electrons in orbital p: 2 for an
-occupied orbital and 0 for an empty one, or a fractional value with smearing.
-
-The integral over the cell is evaluated numerically on the uniform grid.
-v<sub>J</sub> is the Hartree potential. v<sub>xc</sub> and v<sub>T</sub> are derivatives of the XC and kinetic energy
-densities with respect to q; their dot products include the density and
-its three spatial derivatives. For LDA, only the density component contributes.
-The density derivatives use first and second spatial derivatives of A's AOs.
-The grid points and weights stay fixed as A moves, so their nuclear response
-is zero. The frozen-B self terms also have zero derivative. With smearing,
-the same equation gives the free-energy gradient.
-
-For molecules, Coulomb derivatives use direct AO integrals. The AB Becke grid
-moves with the nuclei, so both its coordinates and weights contribute:
-
-<pre>
-g<sub>A</sub> = Tr[P<sup>A</sup> ∂<sub>A</sub>(T<sup>A</sup> + V<sup>A</sup> + V<sup>B</sup>)]
-    + Tr[P<sup>B</sup> ∂<sub>A</sub> V<sup>A</sup>] − Tr[W<sup>A</sup> ∂<sub>A</sub> S<sup>A</sup>]
-    + ∂<sub>A</sub>(½ J<sup>AA</sup> + J<sup>AB</sup> + E<sub>nn</sub>[A+B])
-    + ∂<sub>A</sub> ∫ e<sub>nad</sub>(r) dr
-
-e<sub>nad</sub> = e<sub>xc</sub>[q<sub>A</sub> + q<sub>B</sub>] − e<sub>xc</sub>[q<sub>B</sub>]
-      + t[q<sub>A</sub> + q<sub>B</sub>] − t[q<sub>A</sub>] − t[q<sub>B</sub>]
-</pre>
-
-e<sub>xc</sub> and `t` are energy densities per unit volume. The integral is
-evaluated numerically on the moving AB Becke grid. Its derivative includes
-the moving A basis and the response of both grid coordinates and weights. B's density
-is fixed in space, but its sampled values change when grid points move. The
-derivatives of the subtracted B functional terms are therefore retained at
-finite quadrature resolution. Both backends include the full grid response.
-
 To select atoms, inspect individual contributions, or reuse the calculation
 at a new A geometry:
 
