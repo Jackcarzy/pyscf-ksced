@@ -29,7 +29,7 @@ import threading
 
 import numpy
 
-from pyscf.ksced.mb.arrays import to_host as _to_host
+from pyscf.ksced.arrays import to_host as _to_host
 
 
 def _block_key(coords):

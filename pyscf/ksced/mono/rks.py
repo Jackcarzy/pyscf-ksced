@@ -1,6 +1,6 @@
 '''Molecular KSCED in a monomolecular basis.
 
-Mirrors ksced/rks.py term for term. Two things differ: the total density is
+Mirrors ksced/super/rks.py term for term. Two things differ: the total density is
 formed on the grid by the offset numint rather than by adding density matrices,
 and the Coulomb potential is assembled from a nao_A build plus the cached AB
 slice rather than from one build at the shared dimension.
@@ -9,9 +9,9 @@ slice rather than from one build at the shared dimension.
 import numpy
 
 from pyscf import lib
-from pyscf.ksced.ksced import _trace_prod, _tag_array
-from pyscf.ksced.mb.arrays import like as _like
-from pyscf.ksced.mb.common import KSCEDMBMixin
+from pyscf.ksced.common import _trace_prod, _tag_array
+from pyscf.ksced.arrays import like as _like
+from pyscf.ksced.mono.common import KSCEDMBMixin
 
 
 def _grid_mol(mol):
@@ -57,7 +57,7 @@ class KSCEDMBRKS(KSCEDMBMixin):
         B's nuclei are. Grid cost scales with atom count, not nao squared, so
         using the AB grid costs little and keeps the nao_A speedup intact.
         '''
-        from pyscf.ksced.mb.molecular import initialize_grids
+        from pyscf.ksced.mono.molecular import initialize_grids
         return initialize_grids(self)
 
     def get_veff(self, mol=None, dm=None, dm_last=None, vhf_last=None, hermi=1):
@@ -78,7 +78,7 @@ class KSCEDMBRKS(KSCEDMBMixin):
 
         dm_a = dm
 
-        from pyscf.ksced.mb.molecular import is_gpu, gpu_functionals
+        from pyscf.ksced.mono.molecular import is_gpu, gpu_functionals
         if is_gpu(self):
             exc, vxc = gpu_functionals(self, dm_a)
         else:

@@ -7,8 +7,8 @@ The density matrix is held fixed; AO and projector centers both move.
 
 import numpy as np
 
-from pyscf.ksced.mb.arrays import to_host
-from pyscf.ksced.mb.meshdata import is_fft_df
+from pyscf.ksced.arrays import to_host
+from pyscf.ksced.mono.meshdata import is_fft_df
 
 
 def _validate_fft_grid(mf, cell):

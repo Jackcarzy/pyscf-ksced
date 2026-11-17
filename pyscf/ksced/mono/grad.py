@@ -11,9 +11,9 @@ import numpy as np
 from pyscf import lib
 from pyscf.grad import rhf as mol_grad
 from pyscf.pbc.grad import rhf as pbc_grad
-from pyscf.ksced.ksced import _spin_sum
-from pyscf.ksced.mb.arrays import to_host
-from pyscf.ksced.mb.meshdata import is_fft_df
+from pyscf.ksced.common import _spin_sum
+from pyscf.ksced.arrays import to_host
+from pyscf.ksced.mono.meshdata import is_fft_df
 
 
 def _backend(mf):
@@ -29,7 +29,7 @@ def _backend(mf):
 
 
 def _validate(mf):
-    from pyscf.ksced.mb.grad_pp import _validate_fft_grid
+    from pyscf.ksced.mono.grad_pp import _validate_fft_grid
     env = mf.with_env
     cell = mf.cell
     for obj in (mf, env.mf_b):
@@ -67,7 +67,7 @@ def _validate(mf):
     if not np.allclose(env.mol_a.atom_coords(), cell.atom_coords(), rtol=0, atol=1e-12):
         raise ValueError('The frozen environment was rebound to a different A geometry')
     # The cross terms assume the concatenation is ordered A then B.
-    from pyscf.ksced.mb.env import _conc
+    from pyscf.ksced.mono.env import _conc
     expected = _conc(cell, env.mol_b)
     ab = env.mol_ab
     if (ab.natm != expected.natm or not np.array_equal(ab._bas, expected._bas)
@@ -177,7 +177,7 @@ class Gradients(pbc_grad.GradientsBase):
         self.components = {}
 
     def grad_elec(self, mo_energy=None, mo_coeff=None, mo_occ=None, atmlst=None):
-        from pyscf.ksced.mb.grad_pp import vne_gradient
+        from pyscf.ksced.mono.grad_pp import vne_gradient
         mf, cell = self.base, self.cell
         _validate(mf)
         mo_energy = mf.mo_energy if mo_energy is None else mo_energy

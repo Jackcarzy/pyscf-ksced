@@ -9,10 +9,10 @@ import copy
 import numpy as np
 from pyscf import scf, lib
 from pyscf.grad import rhf, rks, uks
-from pyscf.ksced.ksced import _spin_sum
-from pyscf.ksced.mb.arrays import to_host
-from pyscf.ksced.mb.molecular import is_gpu, padded_densities
-from pyscf.ksced.mb.grad import _Scanner, _contract_ip
+from pyscf.ksced.common import _spin_sum
+from pyscf.ksced.arrays import to_host
+from pyscf.ksced.mono.molecular import is_gpu, padded_densities
+from pyscf.ksced.mono.grad import _Scanner, _contract_ip
 
 
 def _same_integrals(ab, expected):
@@ -45,7 +45,7 @@ def _same_integrals(ab, expected):
 
 
 def _validate(mf):
-    from pyscf.ksced.mb.env import _conc
+    from pyscf.ksced.mono.env import _conc
     env = mf.with_env
     for obj in (mf, env.mf_b):
         mol = obj.mol

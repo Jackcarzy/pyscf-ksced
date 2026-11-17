@@ -2,8 +2,8 @@
 
 import copy
 import numpy as np
-from pyscf.ksced.ksced import _as_pair
-from pyscf.ksced.mb.arrays import to_host
+from pyscf.ksced.common import _as_pair
+from pyscf.ksced.arrays import to_host
 
 
 def is_gpu(mf):
@@ -11,7 +11,7 @@ def is_gpu(mf):
 
 
 def initialize_grids(mf):
-    from pyscf.ksced.mb.rks import _grid_mol
+    from pyscf.ksced.mono.rks import _grid_mol
     if mf.grids.coords is None or mf.grids.mol is mf.mol:
         # Keep the backend and all explicit quadrature settings.
         mf.grids = copy.copy(mf.grids)

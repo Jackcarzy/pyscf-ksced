@@ -1,7 +1,7 @@
 '''Periodic gamma-point KSCED for unrestricted Kohn-Sham.
 
-Mirrors ksced/pbcrks.py term for term, with the same three spin adjustments as
-the molecular unrestricted path in ksced/uks.py. energy_elec, energy_nuc and
+Mirrors ksced/super/pbcrks.py term for term, with the same three spin adjustments as
+the molecular unrestricted path in ksced/super/uks.py. energy_elec, energy_nuc and
 get_hcore are inherited from KSCEDMixin: pbc/dft/uks.py assigns
 energy_elec = pyscf.dft.uks.energy_elec, exactly as the restricted module
 assigns the molecular restricted one, so a single energy expression again serves
@@ -9,7 +9,7 @@ both domains and only get_veff is periodic-specific.
 '''
 
 from pyscf import lib
-from pyscf.ksced.ksced import (KSCEDMixin, _as_like, _as_pair, _avg_spin,
+from pyscf.ksced.common import (KSCEDMixin, _as_like, _as_pair, _avg_spin,
                                _spin_sum, _trace_prod,
                                _tag_array)
 

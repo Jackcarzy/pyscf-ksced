@@ -1,10 +1,10 @@
 '''Molecular unrestricted KSCED in a monomolecular basis.'''
 
 from pyscf import lib
-from pyscf.ksced.ksced import (_as_pair, _avg_spin, _spin_sum, _trace_prod,
+from pyscf.ksced.common import (_as_pair, _avg_spin, _spin_sum, _trace_prod,
                                _tag_array)
-from pyscf.ksced.mb.arrays import like as _like
-from pyscf.ksced.mb.common import KSCEDMBMixin
+from pyscf.ksced.arrays import like as _like
+from pyscf.ksced.mono.common import KSCEDMBMixin
 
 
 class KSCEDMBUKS(KSCEDMBMixin):
@@ -13,7 +13,7 @@ class KSCEDMBUKS(KSCEDMBMixin):
     a_restricted = False
 
     def initialize_grids(self, mol=None, dm=None):
-        from pyscf.ksced.mb.molecular import initialize_grids
+        from pyscf.ksced.mono.molecular import initialize_grids
         return initialize_grids(self)
 
     def get_veff(self, mol=None, dm=None, dm_last=None, vhf_last=None, hermi=1):
@@ -32,7 +32,7 @@ class KSCEDMBUKS(KSCEDMBMixin):
         max_memory = self.max_memory - lib.current_memory()[0]
         dm_a = _as_pair(dm)
 
-        from pyscf.ksced.mb.molecular import is_gpu, gpu_functionals
+        from pyscf.ksced.mono.molecular import is_gpu, gpu_functionals
         if is_gpu(self):
             exc, vxc = gpu_functionals(self, dm)
         else:

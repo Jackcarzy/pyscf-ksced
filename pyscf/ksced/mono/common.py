@@ -8,7 +8,7 @@ interface as _FrozenEnv.
 
 import numpy
 from pyscf.lib import logger
-from pyscf.ksced.ksced import KSCEDMixin
+from pyscf.ksced.common import KSCEDMixin
 
 
 class KSCEDMBMixin(KSCEDMixin):

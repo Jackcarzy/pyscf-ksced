@@ -39,9 +39,9 @@ never had that bug because it never re-evaluated B's AOs at all.
 
 import numpy
 
-from pyscf.ksced.mb.arrays import like as _like
-from pyscf.ksced.mb.arrays import to_host as _host
-from pyscf.ksced.ksced import _stack_like
+from pyscf.ksced.arrays import like as _like
+from pyscf.ksced.arrays import to_host as _host
+from pyscf.ksced.common import _stack_like
 
 # AO values held per chunk while the mesh density is collocated. deriv=1 gives
 # four components, so a chunk costs 4 * blk * nao_B * 8 bytes.

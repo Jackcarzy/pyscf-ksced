@@ -1,6 +1,6 @@
 '''The frozen subsystem B, described in its own AO basis.
 
-Presents exactly the interface of ksced._FrozenEnv, which is what lets
+Presents exactly the interface of super.env._FrozenEnv, which is what lets
 KSCEDMixin -- get_hcore, energy_nuc, energy_elec, reset -- serve both basis
 modes without modification. The environment object, not the SCF class, is the
 polymorphic seam.
@@ -11,12 +11,12 @@ import copy
 import numpy
 from pyscf.lib import logger
 
-from pyscf.ksced.ksced import (_is_cell, _kinetic_of, _spin_sum, _stack_like,
+from pyscf.ksced.common import (_is_cell, _kinetic_of, _spin_sum, _stack_like,
                                _trace_prod_spin)
-from pyscf.ksced.mb.arrays import to_host as _host
-from pyscf.ksced.mb.griddens import _GridDensity, _MeshDensity
-from pyscf.ksced.mb.meshdata import _MeshData, is_fft_df as _is_fft_df
-from pyscf.ksced.mb.numint import _ksced_numint
+from pyscf.ksced.arrays import to_host as _host
+from pyscf.ksced.mono.griddens import _GridDensity, _MeshDensity
+from pyscf.ksced.mono.meshdata import _MeshData, is_fft_df as _is_fft_df
+from pyscf.ksced.mono.numint import _ksced_numint
 
 
 def _grids_bound_to(grids, mol):

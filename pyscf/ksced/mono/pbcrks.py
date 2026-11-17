@@ -1,14 +1,14 @@
 '''Periodic gamma-point KSCED in a monomolecular basis.
 
-Mirrors ksced/pbcrks.py term for term. energy_elec, energy_nuc and get_hcore are
+Mirrors ksced/super/pbcrks.py term for term. energy_elec, energy_nuc and get_hcore are
 inherited from KSCEDMixin: pbc/dft/rks.py assigns energy_elec = mol_ks.energy_elec,
 so one energy expression serves both domains and only get_veff is periodic.
 '''
 
 from pyscf import lib
-from pyscf.ksced.ksced import _trace_prod, _tag_array
-from pyscf.ksced.mb.arrays import like as _like
-from pyscf.ksced.mb.common import KSCEDMBMixin
+from pyscf.ksced.common import _trace_prod, _tag_array
+from pyscf.ksced.arrays import like as _like
+from pyscf.ksced.mono.common import KSCEDMBMixin
 
 
 class KSCEDMBPBCRKS(KSCEDMBMixin):

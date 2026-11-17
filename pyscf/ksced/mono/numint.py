@@ -14,7 +14,7 @@ import threading
 
 import numpy
 
-from pyscf.ksced.mb.arrays import like as _as_like
+from pyscf.ksced.arrays import like as _as_like
 
 
 def _rho_for_xctype(rho4, xctype, spin=None, polarized=False, keepdims=False):

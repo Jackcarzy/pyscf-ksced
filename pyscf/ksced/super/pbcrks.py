@@ -2,7 +2,7 @@
 
 import numpy
 from pyscf import lib
-from pyscf.ksced.ksced import (KSCEDMixin, _as_like, _trace_prod,
+from pyscf.ksced.common import (KSCEDMixin, _as_like, _trace_prod,
                                _tag_array)
 
 

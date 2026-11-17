@@ -23,7 +23,7 @@ def oracle_nr_rks(ni, mol_ab, grids, xc, dm_a, dm_b, nao_a, **kwargs):
     '''Stock nr_rks at the AB dimension, sliced back to A's block.
 
     Returns (nelec, exc, vxc[A,A]). nelec and exc are for the *total* density,
-    matching what the offset numint in mb/numint.py returns.
+    matching what the offset numint in mono/numint.py returns.
     '''
     nao_b = dm_b.shape[-1]
     dm_t = pad_dm(dm_a, dm_b, nao_a, nao_b)

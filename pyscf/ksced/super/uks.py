@@ -1,6 +1,6 @@
 '''Molecular KSCED for unrestricted Kohn-Sham.
 
-Mirrors ksced/rks.py term for term. Three things differ:
+Mirrors ksced/super/rks.py term for term. Three things differ:
 
   - the numint driver is nr_uks, whose vmat is (2, nao, nao) and whose nelec is
     (2,) while excsum stays a scalar
@@ -16,7 +16,7 @@ two channels agree.
 '''
 
 from pyscf import lib
-from pyscf.ksced.ksced import (KSCEDMixin, _as_like, _as_pair, _avg_spin,
+from pyscf.ksced.common import (KSCEDMixin, _as_like, _as_pair, _avg_spin,
                                _spin_sum, _trace_prod,
                                _tag_array)
 

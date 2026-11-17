@@ -1,10 +1,10 @@
 '''Periodic unrestricted KSCED in a monomolecular basis.'''
 
 from pyscf import lib
-from pyscf.ksced.ksced import (_as_pair, _avg_spin, _spin_sum, _trace_prod,
+from pyscf.ksced.common import (_as_pair, _avg_spin, _spin_sum, _trace_prod,
                                _tag_array)
-from pyscf.ksced.mb.arrays import like as _like
-from pyscf.ksced.mb.common import KSCEDMBMixin
+from pyscf.ksced.arrays import like as _like
+from pyscf.ksced.mono.common import KSCEDMBMixin
 
 
 class KSCEDMBPBCUKS(KSCEDMBMixin):
