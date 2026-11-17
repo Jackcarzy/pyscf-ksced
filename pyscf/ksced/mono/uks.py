@@ -4,7 +4,7 @@ from pyscf import lib
 from pyscf.ksced.common import (_as_pair, _avg_spin, _spin_sum, _trace_prod,
                                _tag_array)
 from pyscf.ksced.arrays import like as _like
-from pyscf.ksced.mono.common import KSCEDMBMixin
+from pyscf.ksced.mono.mixin import KSCEDMBMixin
 
 
 class KSCEDMBUKS(KSCEDMBMixin):

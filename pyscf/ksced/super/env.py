@@ -2,9 +2,8 @@
 
 from pyscf.lib import logger
 
-from pyscf.ksced.common import (_is_kscf, _is_polarized, _kweight_trace,
-                                _spin_sum, _stack_like, _trace_prod_spin,
-                                _vne_from_hcore)
+from pyscf.ksced.common import (_is_kscf, _is_polarized, _spin_sum,
+                                _stack_like, _trace_energy, _vne_from_hcore)
 
 
 class _FrozenEnv:
@@ -132,7 +131,6 @@ class _FrozenEnv:
         if self._e_vne_a_rho_b is None:
             if callable(vne_a):
                 vne_a = vne_a()
-            trace = _trace_prod_spin if self.kpts is None else _kweight_trace
-            self._e_vne_a_rho_b = trace(vne_a, self.dm_b)
+            self._e_vne_a_rho_b = _trace_energy(vne_a, self.dm_b, self.kpts)
         return self._e_vne_a_rho_b
 

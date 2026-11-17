@@ -59,8 +59,7 @@ def _sb_class(mf, env):
     from pyscf.ksced.super import pbcrks as ksced_pbcrks
 
     if _is_kscf(mf):
-        from pyscf.ksced.super import kpbcrks as ksced_kpbcrks
-        return ksced_kpbcrks.KSCEDKPBCRKS
+        return ksced_pbcrks.KSCEDKPBCRKS
     if _needs_uks_machinery(mf, env):
         if _is_pbc(mf):
             from pyscf.ksced.super import pbcuks as ksced_pbcuks
@@ -281,8 +280,7 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode=None, env=None,
             return mf
         _check_numint(mf)
         if _is_kscf(mf):
-            from pyscf.ksced.mono import kpbcrks as mb_kpbcrks
-            base = mb_kpbcrks.KSCEDMBKPBCRKS
+            base = mb_pbcrks.KSCEDMBKPBCRKS
         elif _needs_uks_machinery(mf, env):
             if _is_pbc(mf):
                 from pyscf.ksced.mono import pbcuks as mb_pbcuks

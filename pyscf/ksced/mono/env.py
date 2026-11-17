@@ -11,8 +11,8 @@ import copy
 import numpy
 from pyscf.lib import logger
 
-from pyscf.ksced.common import (_is_cell, _is_kscf, _kinetic_of, _kweight_trace,
-                                _spin_sum, _stack_like, _trace_prod_spin)
+from pyscf.ksced.common import (_is_cell, _is_kscf, _kinetic_of, _spin_sum,
+                                _stack_like, _trace_energy)
 from pyscf.ksced.arrays import to_host as _host
 from pyscf.ksced.mono.griddens import _GridDensity, _MeshDensity
 from pyscf.ksced.mono.meshdata import _MeshData, is_fft_df as _is_fft_df
@@ -363,8 +363,8 @@ class _FrozenEnvMB:
         '''<V_ne[A]|rho_B>.
         '''
         if self._e_vne_a_rho_b is None:
-            trace = _trace_prod_spin if self.kpts is None else _kweight_trace
-            self._e_vne_a_rho_b = trace(self._vne_a_in_bs_basis(), self.dm_b)
+            self._e_vne_a_rho_b = _trace_energy(
+                self._vne_a_in_bs_basis(), self.dm_b, self.kpts)
         return self._e_vne_a_rho_b
 
     def grids_for_b(self, grids):
@@ -473,8 +473,7 @@ def kpoint_density_evaluator(ni, cell_b, dm_b, kpts):
     '''
     def evaluator(coords):
         ao = ni.eval_ao(cell_b, coords, kpts, deriv=1)
-        rho = ni.eval_rho(cell_b, ao, dm_b, xctype='GGA', hermi=1)
-        return rho.real if getattr(rho, 'dtype', None) is not None and rho.dtype.kind == 'c' else rho
+        return ni.eval_rho(cell_b, ao, dm_b, xctype='GGA', hermi=1).real
     return evaluator
 
 

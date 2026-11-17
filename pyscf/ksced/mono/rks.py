@@ -11,7 +11,7 @@ import numpy
 from pyscf import lib
 from pyscf.ksced.common import _trace_prod, _tag_array
 from pyscf.ksced.arrays import like as _like
-from pyscf.ksced.mono.common import KSCEDMBMixin
+from pyscf.ksced.mono.mixin import KSCEDMBMixin
 
 
 def _grid_mol(mol):

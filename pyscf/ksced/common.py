@@ -60,6 +60,12 @@ def _is_kscf(mf):
     return bool(mf.istype('KSCF'))
 
 
+def _trace_energy(op, dm, kpts=None):
+    """<op|dm> for one energy term: averaged over k for a k-point set,
+    otherwise summed over spin when dm is spin resolved."""
+    return _kweight_trace(op, dm) if kpts is not None else _trace_prod_spin(op, dm)
+
+
 def _kweight_trace(a, b):
     """(1/nk) sum_k tr(a_k b_k).real for (nk, nao, nao) stacks, on any backend.
 
@@ -217,11 +223,25 @@ class KSCEDMixin(_KSCED):
             logger.info(self, 'KSCED mol_ab not supplied: E_nn[AB] excluded from e_tot')
         return self
 
-    def get_hcore(self, mol=None):
+    def _kpoints(self):
+        """The k argument of one-electron builds: kpts (nk, 3) for a k-point
+        object, kpt (3,) at the gamma point, None for a molecule.
+
+        Reads kpt only on non-k-point objects: KSCF.kpt raises for nk > 1.
+        """
+        return self.kpts if _is_kscf(self) else getattr(self, 'kpt', None)
+
+    def _hcore_of_a(self, mol):
+        """A's own hcore, without V_ne[B]."""
+        if _is_cell(mol):
+            return super().get_hcore(mol, self._kpoints())
+        return super().get_hcore(mol)
+
+    def get_hcore(self, mol=None, kpts=None):
         if mol is None:
             mol = self.mol
-        h1e = super().get_hcore(mol)
-        vne_b = self.with_env.get_vne_b(mol, getattr(self, 'kpt', None))
+        h1e = self._hcore_of_a(mol)
+        vne_b = self.with_env.get_vne_b(mol, self._kpoints())
         return h1e + _as_like(h1e, vne_b)
 
     def energy_nuc(self):
@@ -250,52 +270,14 @@ class KSCEDMixin(_KSCED):
                 e2 + e_coul_ab_half)
 
     def _trace_dm(self, op, dm):
-        """<op|dm> for one energy term. The k-point classes average over k."""
-        return _trace_prod_spin(op, dm)
+        """<op|dm> for one energy term, averaged over k on a k-point object."""
+        return _trace_energy(op, dm, self.kpts if _is_kscf(self) else None)
 
     def _vne_a(self):
         """V_ne[A] from the unmodified get_hcore, i.e. without vne_b."""
-        kpt = getattr(self, 'kpt', None)
-        mol = self.mol
-        if _is_cell(mol):
-            h1e = super().get_hcore(mol, kpt)
-        else:
-            h1e = super().get_hcore(mol)
-        return h1e - _as_like(h1e, _kinetic_of(mol, kpt))
+        h1e = self._hcore_of_a(self.mol)
+        return h1e - _as_like(h1e, _kinetic_of(self.mol, self._kpoints()))
 
     def reset(self, mol=None):
         self.with_env.reset()
         return super().reset(mol)
-
-
-
-class KSCEDKptMixin:
-    '''k-point overrides shared by both basis modes. List it before the mode's
-    mixin, e.g. class X(KSCEDKptMixin, KSCEDMixin).
-
-    A k-point object carries kpts (nk, 3) rather than kpt, its one-electron
-    matrices are (nk, nao, nao), and every energy trace is the k average used by
-    pyscf.pbc.dft.krks: (1/nk) sum_k tr(O_k D_k).
-    '''
-
-    def get_hcore(self, cell=None, kpts=None):
-        '''hcore_k of A plus V_ne[B]_k, for every k-point.
-
-        KSCF.get_hcore takes (cell, kpts); KSCEDMixin.get_hcore takes a single
-        gamma-point kpt, so the k-point classes supply their own.
-        '''
-        if cell is None:
-            cell = self.cell
-        if kpts is None:
-            kpts = self.kpts
-        h1e = super(KSCEDMixin, self).get_hcore(cell, kpts)
-        vne_b = self.with_env.get_vne_b(cell, kpts)
-        return h1e + _as_like(h1e, vne_b)
-
-    def _vne_a(self):
-        '''V_ne[A]_k from the unmodified get_hcore, i.e. without V_ne[B].'''
-        h1e = super(KSCEDMixin, self).get_hcore(self.cell, self.kpts)
-        return h1e - _as_like(h1e, _kinetic_of(self.cell, self.kpts))
-
-    def _trace_dm(self, op, dm):
-        return _kweight_trace(op, dm)

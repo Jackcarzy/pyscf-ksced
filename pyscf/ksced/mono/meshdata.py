@@ -253,30 +253,21 @@ class _MeshData:
     def matrix(self, mf_a, kpts=None):
         '''J[rho_B] in A's basis, by quadrature over A's AOs alone.
 
-        At the gamma point this is (nao_a, nao_a) and real. With a k-point set
-        it is (nk, nao_a, nao_a), J_k = SUM_r w phi_k(r)^* phi_k(r) v_J(r), and
-        complex: the AO values carry the phase exp(ik.r).
+        At the gamma point (kpts None) this is (nao_a, nao_a) and real. With a
+        k-point set it is (nk, nao_a, nao_a), J_k = SUM_r w phi_k(r)^* phi_k(r)
+        v_J(r), and complex: the AO values carry the phase exp(ik.r).
         '''
         df_a = mf_a.with_df
         self._check_mesh(df_a)
 
-        gamma = kpts is None
-        if gamma:
-            kpts = getattr(mf_a, 'kpt', None)
         vr = self.vj()
-        vr_a = None
         js = None
-        for ao_ks, p0, p1 in _ao_blocks(df_a, kpts):
-            nk = 1 if gamma else len(ao_ks)
-            if js is None:
-                js = [None] * nk
-            for k in range(nk):
-                ao = ao_ks[k]
-                if vr_a is None:
-                    vr_a = _like(ao, vr)
-                block = ao.conj().T.dot(ao * vr_a[p0:p1, None])
-                js[k] = block if js[k] is None else js[k] + block
-        if gamma:
+        k = getattr(mf_a, 'kpt', None) if kpts is None else kpts
+        for ao_ks, p0, p1 in _ao_blocks(df_a, k):
+            v = _like(ao_ks[0], vr[p0:p1])[:, None]
+            blocks = [ao.conj().T.dot(ao * v) for ao in ao_ks]
+            js = blocks if js is None else [j + b for j, b in zip(js, blocks)]
+        if kpts is None:
             return _host(js[0]).real
         return numpy.stack([_host(j) for j in js])
 
