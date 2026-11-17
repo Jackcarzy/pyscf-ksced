@@ -23,8 +23,7 @@ class KSCEDMBPBCRKS(KSCEDMBMixin):
         if kpt is None:
             kpt = self.kpt
         if kpts_band is not None:
-            raise NotImplementedError('KSCED is gamma-point only; kpts_band is '
-                                      'not supported')
+            raise NotImplementedError('KSCED does not support kpts_band')
 
         ni = self._numint
         if ni.libxc.is_hybrid_xc(self.xc):

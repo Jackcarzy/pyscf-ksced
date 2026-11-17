@@ -94,6 +94,31 @@ mf_ainb = ksced.embed(mf_a, mf_b, env=env)
 mf_ainb.kernel()
 ```
 
+### k-points
+
+Periodic subsystems can use k-points with restricted Kohn-Sham (`KRKS`), in
+both basis modes and on CPU or GPU. A and B must use the same k-points.
+
+```python
+from pyscf.pbc import dft as pbc_dft
+
+kpts = cell_b.make_kpts([2, 2, 1])
+mf_b = pbc_dft.KRKS(cell_b, kpts=kpts, xc="PBE").run()
+mf_ainb = ksced.embed(pbc_dft.KRKS(cell_a, kpts=kpts, xc="PBE"), mf_b,
+                      basis_mode="M")
+mf_ainb.kernel()
+```
+
+Every trace in the energy below becomes a k-point average,
+(1/N<sub>k</sub>) Σ<sub>k</sub> Tr[P<sub>k</sub> O<sub>k</sub>], as in PySCF's `KRKS`.
+
+| | Γ point (`RKS`, `UKS`) | k-points (`KRKS`) |
+|---|---|---|
+| `basis_mode="S"` | yes | yes |
+| `basis_mode="M"` | yes | yes |
+| Unrestricted (`UKS` / `KUKS`) | yes | no |
+| Analytic gradients (`basis_mode="M"`) | yes | no |
+
 ### Embedded energy
 
 `mf_ainb.e_tot` is the energy of A embedded in frozen B. In
@@ -147,6 +172,13 @@ components = grad_ainb.components                  # full A gradient by term
 scanner_ainb = mf_ainb.nuc_grad_method().as_scanner()
 energy_ainb, gradient_ainb_on_a = scanner_ainb(displaced_mol_a)  # Mole or Cell
 ```
+
+## Package layout
+
+- `pyscf/ksced/ksced.py`: `embed()`, `frozen_env()` and class dispatch
+- `pyscf/ksced/common.py`, `arrays.py`: code shared by both basis modes
+- `pyscf/ksced/super/`: supermolecular basis (`basis_mode="S"`)
+- `pyscf/ksced/mono/`: monomolecular basis (`basis_mode="M"`), including gradients
 
 ## Examples
 

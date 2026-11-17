@@ -55,6 +55,26 @@ def _trace_prod_spin(a, b):
     return _trace_prod(a, _spin_sum(b))
 
 
+def _is_kscf(mf):
+    """True for a k-point SCF object (KRKS, KUKS, ...)."""
+    return bool(mf.istype('KSCF'))
+
+
+def _kweight_trace(a, b):
+    """(1/nk) sum_k tr(a_k b_k).real for (nk, nao, nao) stacks, on any backend.
+
+    The k-point average used by pyscf.pbc.dft.krks for every one-electron energy
+    term: krks.energy_elec weights tr(h_k D_k), and krks.get_veff weights
+    tr(D_k J_k), by 1/nk.
+    """
+    if _is_gpu_array(a) or _is_gpu_array(b):
+        import cupy
+        a, b = cupy.asarray(a), cupy.asarray(b)
+        return float(cupy.einsum('kij,kji->', a, b).real.get()) / a.shape[0]
+    a, b = numpy.asarray(a), numpy.asarray(b)
+    return float(numpy.einsum('kij,kji->', a, b).real) / a.shape[0]
+
+
 def _is_polarized(dm):
     """True when dm carries an explicit spin axis."""
     return getattr(dm, 'ndim', 2) == 3
@@ -104,10 +124,16 @@ def _tag_array(a, **tags):
 
 
 def _kinetic_of(mol, kpt=None):
-    """Kinetic-energy matrix. Basis-only, so A and B share it."""
+    """Kinetic-energy matrix. Basis-only, so A and B share it.
+
+    kpt may be a single k-point (3,), giving (nao, nao), or a k-point set
+    (nk, 3), giving the stacked (nk, nao, nao) matrices.
+    """
     if _is_cell(mol):
         if kpt is None:
             kpt = numpy.zeros(3)
+        if numpy.ndim(kpt) == 2:
+            return numpy.asarray(mol.pbc_intor('int1e_kin', hermi=1, kpts=kpt))
         return mol.pbc_intor('int1e_kin', hermi=1, kpts=kpt)
     return mol.intor_symmetric('int1e_kin')
 
@@ -172,6 +198,9 @@ class KSCEDMixin(_KSCED):
         from pyscf.ksced.mono.env import _FrozenEnvMB
         if not isinstance(self.with_env, _FrozenEnvMB):
             raise NotImplementedError("KSCED gradients require basis_mode='M'")
+        if _is_kscf(self):
+            raise NotImplementedError(
+                'KSCED gradients are gamma-point only; this is a k-point object')
         if _is_cell(self.mol):
             from pyscf.ksced.mono.grad import Gradients
         else:
@@ -213,13 +242,16 @@ class KSCEDMixin(_KSCED):
         # callable so the environment can cache its first evaluation.
         e_vne_a_rho_b = env.e_vne_a_rho_b(self._vne_a)
         # Add the half of J_AB not included in get_veff's Coulomb energy.
-        e_coul_ab_half = _trace_prod_spin(
-            env.get_j_b(self, self.mol), dm) * .5
+        e_coul_ab_half = self._trace_dm(env.get_j_b(self, self.mol), dm) * .5
 
         self.scf_summary['ksced_vne_a_rho_b'] = e_vne_a_rho_b
         self.scf_summary['ksced_coul_ab_half'] = e_coul_ab_half
         return (e_tot_elec + e_vne_a_rho_b + e_coul_ab_half,
                 e2 + e_coul_ab_half)
+
+    def _trace_dm(self, op, dm):
+        """<op|dm> for one energy term. The k-point classes average over k."""
+        return _trace_prod_spin(op, dm)
 
     def _vne_a(self):
         """V_ne[A] from the unmodified get_hcore, i.e. without vne_b."""
@@ -235,3 +267,35 @@ class KSCEDMixin(_KSCED):
         self.with_env.reset()
         return super().reset(mol)
 
+
+
+class KSCEDKptMixin:
+    '''k-point overrides shared by both basis modes. List it before the mode's
+    mixin, e.g. class X(KSCEDKptMixin, KSCEDMixin).
+
+    A k-point object carries kpts (nk, 3) rather than kpt, its one-electron
+    matrices are (nk, nao, nao), and every energy trace is the k average used by
+    pyscf.pbc.dft.krks: (1/nk) sum_k tr(O_k D_k).
+    '''
+
+    def get_hcore(self, cell=None, kpts=None):
+        '''hcore_k of A plus V_ne[B]_k, for every k-point.
+
+        KSCF.get_hcore takes (cell, kpts); KSCEDMixin.get_hcore takes a single
+        gamma-point kpt, so the k-point classes supply their own.
+        '''
+        if cell is None:
+            cell = self.cell
+        if kpts is None:
+            kpts = self.kpts
+        h1e = super(KSCEDMixin, self).get_hcore(cell, kpts)
+        vne_b = self.with_env.get_vne_b(cell, kpts)
+        return h1e + _as_like(h1e, vne_b)
+
+    def _vne_a(self):
+        '''V_ne[A]_k from the unmodified get_hcore, i.e. without V_ne[B].'''
+        h1e = super(KSCEDMixin, self).get_hcore(self.cell, self.kpts)
+        return h1e - _as_like(h1e, _kinetic_of(self.cell, self.kpts))
+
+    def _trace_dm(self, op, dm):
+        return _kweight_trace(op, dm)

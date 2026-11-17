@@ -11,8 +11,8 @@ import copy
 import numpy
 from pyscf.lib import logger
 
-from pyscf.ksced.common import (_is_cell, _kinetic_of, _spin_sum, _stack_like,
-                               _trace_prod_spin)
+from pyscf.ksced.common import (_is_cell, _is_kscf, _kinetic_of, _kweight_trace,
+                                _spin_sum, _stack_like, _trace_prod_spin)
 from pyscf.ksced.arrays import to_host as _host
 from pyscf.ksced.mono.griddens import _GridDensity, _MeshDensity
 from pyscf.ksced.mono.meshdata import _MeshData, is_fft_df as _is_fft_df
@@ -105,6 +105,9 @@ class _FrozenEnvMB:
                                   'density is taken from an unconverged calculation')
             dm_b = mf_b.make_rdm1()
         self.dm_b = dm_b
+        # k-point set of B, or None at the gamma point. A k-point dm_b is
+        # (nk, nao, nao); with kpts set, its leading axis is k, never spin.
+        self.kpts = mf_b.kpts if _is_kscf(mf_b) else None
 
         self.nao_b = self.mol_b.nao
 
@@ -245,7 +248,14 @@ class _FrozenEnvMB:
 
     @property
     def polarized(self):
+        if self.kpts is not None:
+            return False        # k-point environments are restricted (KRKS) only
         return getattr(self.dm_b, 'ndim', 2) == 3
+
+    def _k(self, kpt):
+        """The k argument B's own evaluations need: B's k-point set when it has
+        one, else whatever single kpt the caller passed."""
+        return self.kpts if self.kpts is not None else kpt
 
     def _nr(self, ni):
         return ni.nr_uks if self.polarized else ni.nr_rks
@@ -272,11 +282,12 @@ class _FrozenEnvMB:
         moves work off the device, since get_hcore there is MultiGrid.
         '''
         n = self.nao_a
+        kpt = self._k(kpt)
         vne_ab = self._vne_on(self.mol_ab, kpt)
         if self._vne_b is None:
-            self._vne_b = vne_ab[:n, :n] - self._vne_on(self.mol_a, kpt)
+            self._vne_b = vne_ab[..., :n, :n] - self._vne_on(self.mol_a, kpt)
         if self._vne_a_in_b is None:
-            self._vne_a_in_b = vne_ab[n:, n:] - self._vne_on(self.mol_b, kpt)
+            self._vne_a_in_b = vne_ab[..., n:, n:] - self._vne_on(self.mol_b, kpt)
 
     def get_vne_b(self, mol=None, kpt=None):
         '''V_ne[B] in A's basis: the A-A block of V_ne_ab, less A's own.'''
@@ -303,10 +314,12 @@ class _FrozenEnvMB:
         optional only so that the AB path stays reachable without one.
         '''
         if self._j_b is None:
-            mesh = self._mesh_data(getattr(mf, '_numint', None),
-                                   getattr(mf, 'kpt', None))
+            # A k-point object's kpt property raises for nk > 1, so read it
+            # only at the gamma point.
+            kpt = self.kpts if self.kpts is not None else getattr(mf, 'kpt', None)
+            mesh = self._mesh_data(getattr(mf, '_numint', None), kpt)
             if mesh is not None and _is_fft_df(getattr(mf, 'with_df', None)):
-                self._j_b = mesh.matrix(mf)
+                self._j_b = mesh.matrix(mf, self.kpts)
             else:
                 self._j_b = self._j_b_from_ab()
         return self._j_b
@@ -332,9 +345,14 @@ class _FrozenEnvMB:
         '''J[rho_B] as the A-A block of an A+B build with a padded density.'''
         n = self.nao_a
         nao_ab = self.nao_a + self.nao_b
+        mf_ab = self._mf_on(self.mol_ab)
+        if self.kpts is not None:
+            dm_pad = numpy.zeros((len(self.kpts), nao_ab, nao_ab), dtype=complex)
+            dm_pad[:, n:, n:] = _host(self.dm_b)
+            j_ab = mf_ab.get_j(self.mol_ab, dm_pad, 1, self.kpts, None)
+            return _host(j_ab)[:, :n, :n]
         dm_pad = numpy.zeros((nao_ab, nao_ab))
         dm_pad[n:, n:] = _host(_spin_sum(self.dm_b)).real
-        mf_ab = self._mf_on(self.mol_ab)
         if _is_cell(self.mol_ab):
             j_ab = mf_ab.get_j(self.mol_ab, dm_pad, 1, numpy.zeros(3), None)
         else:
@@ -345,8 +363,8 @@ class _FrozenEnvMB:
         '''<V_ne[A]|rho_B>.
         '''
         if self._e_vne_a_rho_b is None:
-            self._e_vne_a_rho_b = _trace_prod_spin(
-                self._vne_a_in_bs_basis(), self.dm_b)
+            trace = _trace_prod_spin if self.kpts is None else _kweight_trace
+            self._e_vne_a_rho_b = trace(self._vne_a_in_bs_basis(), self.dm_b)
         return self._e_vne_a_rho_b
 
     def grids_for_b(self, grids):
@@ -382,6 +400,7 @@ class _FrozenEnvMB:
         is for a periodic fit that never forms a mesh density at all, and still
         needs the grid rebound before B's shells are screened with A's mask.
         '''
+        kpt = self._k(kpt)
         mesh = self._mesh_data(ni, kpt)
         if mesh is not None:
             return mesh.energy(ni, xc)
@@ -405,6 +424,8 @@ class _FrozenEnvMB:
 
     def _make_evaluator(self, ni, kpt=None):
         '''rho_B(coords) at GGA order, using B's own AOs.'''
+        if self.kpts is not None:
+            return kpoint_density_evaluator(ni, self.mol_b, self.dm_b, self.kpts)
         return density_evaluator(ni, self.mol_b, self.dm_b, kpt)
 
     def _make_griddens(self, ni, kpt=None):
@@ -440,6 +461,21 @@ class _FrozenEnvMB:
         if self._numint is None:
             self._numint = _ksced_numint(ni, self._griddens)
         return self._numint
+
+
+def kpoint_density_evaluator(ni, cell_b, dm_b, kpts):
+    '''rho_B(coords) at GGA order from a k-point density matrix, as (4, n).
+
+    rho_B(r) = (1/nk) sum_k sum_{mu nu} D_k,mu nu phi_k,mu(r)* phi_k,nu(r), which
+    is what KNumInt.eval_rho returns for a list of per-k AO values. It is real:
+    hermi=1 tells the backend each D_k is Hermitian. ni must be a k-point
+    numint (pyscf.pbc.dft.numint.KNumInt or GPU4PySCF's).
+    '''
+    def evaluator(coords):
+        ao = ni.eval_ao(cell_b, coords, kpts, deriv=1)
+        rho = ni.eval_rho(cell_b, ao, dm_b, xctype='GGA', hermi=1)
+        return rho.real if getattr(rho, 'dtype', None) is not None and rho.dtype.kind == 'c' else rho
+    return evaluator
 
 
 def density_evaluator(ni, mol_b, dm_b, kpt=None):

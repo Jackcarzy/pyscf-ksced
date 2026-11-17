@@ -77,7 +77,10 @@ def _tools_for(df):
 
 
 def _ao_blocks(df, kpt=None):
-    '''(ao, p0, p1) over the uniform mesh, in linear order.
+    '''(ao_ks, p0, p1) over the uniform mesh, in linear order.
+
+    ao_ks[k] is the (ngrids_block, nao) AO block at the k-th of the requested
+    k-points: one gamma point by default, or a whole (nk, 3) set.
 
     Linear order is the whole requirement: p0:p1 indexes an array that will be,
     or has been, passed through an FFT. Neither backend's loop permutes by
@@ -90,16 +93,16 @@ def _ao_blocks(df, kpt=None):
         PySCF      df.aoR_loop   -> (ao_k1_etc, p0, p1)
         gpu4pyscf  ni.block_loop -> (ao_ks, weight, coords)
     '''
-    kpts = numpy.zeros((1, 3)) if kpt is None else numpy.reshape(kpt, (1, 3))
+    kpts = numpy.zeros((1, 3)) if kpt is None else numpy.reshape(kpt, (-1, 3))
     if hasattr(df, 'aoR_loop'):                     # PySCF
         for ao_ks_etc, p0, p1 in df.aoR_loop(df.grids, kpts):
-            yield ao_ks_etc[0][0], p0, p1
+            yield ao_ks_etc[0], p0, p1
     else:                                           # gpu4pyscf
         p1 = 0
         for ao_ks, _weight, coords in df._numint.block_loop(
                 df.cell, df.grids, 0, kpts):
             p0, p1 = p1, p1 + coords.shape[0]
-            yield ao_ks[0], p0, p1
+            yield ao_ks, p0, p1
 
 
 def _total_density(rho):
@@ -247,20 +250,35 @@ class _MeshData:
             total = den(r).dot(exc)
         return float(_host(total))
 
-    def matrix(self, mf_a):
-        '''J[rho_B] in A's basis, by quadrature over A's AOs alone.'''
+    def matrix(self, mf_a, kpts=None):
+        '''J[rho_B] in A's basis, by quadrature over A's AOs alone.
+
+        At the gamma point this is (nao_a, nao_a) and real. With a k-point set
+        it is (nk, nao_a, nao_a), J_k = SUM_r w phi_k(r)^* phi_k(r) v_J(r), and
+        complex: the AO values carry the phase exp(ik.r).
+        '''
         df_a = mf_a.with_df
         self._check_mesh(df_a)
 
+        gamma = kpts is None
+        if gamma:
+            kpts = getattr(mf_a, 'kpt', None)
         vr = self.vj()
         vr_a = None
-        j = None
-        for ao, p0, p1 in _ao_blocks(df_a, getattr(mf_a, 'kpt', None)):
-            if vr_a is None:
-                vr_a = _like(ao, vr)
-            block = ao.conj().T.dot(ao * vr_a[p0:p1, None])
-            j = block if j is None else j + block
-        return _host(j).real
+        js = None
+        for ao_ks, p0, p1 in _ao_blocks(df_a, kpts):
+            nk = 1 if gamma else len(ao_ks)
+            if js is None:
+                js = [None] * nk
+            for k in range(nk):
+                ao = ao_ks[k]
+                if vr_a is None:
+                    vr_a = _like(ao, vr)
+                block = ao.conj().T.dot(ao * vr_a[p0:p1, None])
+                js[k] = block if js[k] is None else js[k] + block
+        if gamma:
+            return _host(js[0]).real
+        return numpy.stack([_host(j) for j in js])
 
     def _check_mesh(self, df_a):
         '''A and B must be on the same mesh for the potential to transfer.

@@ -2,8 +2,9 @@
 
 from pyscf.lib import logger
 
-from pyscf.ksced.common import (_is_polarized, _spin_sum, _stack_like,
-                                _trace_prod_spin, _vne_from_hcore)
+from pyscf.ksced.common import (_is_kscf, _is_polarized, _kweight_trace,
+                                _spin_sum, _stack_like, _trace_prod_spin,
+                                _vne_from_hcore)
 
 
 class _FrozenEnv:
@@ -23,6 +24,9 @@ class _FrozenEnv:
                                   'density is taken from an unconverged calculation')
             dm_b = mf_b.make_rdm1()
         self.dm_b = dm_b
+        # k-point set of B, or None at the gamma point. A k-point dm_b is
+        # (nk, nao, nao); with kpts set, its leading axis is k, never spin.
+        self.kpts = mf_b.kpts if _is_kscf(mf_b) else None
         self.reset()
 
     def reset(self):
@@ -36,6 +40,8 @@ class _FrozenEnv:
     @property
     def polarized(self):
         '''True when B was converged unrestricted, so dm_b carries a spin axis.'''
+        if self.kpts is not None:
+            return False        # k-point environments are restricted (KRKS) only
         return _is_polarized(self.dm_b)
 
     def dm_b_for(self, polarized_a):
@@ -57,6 +63,11 @@ class _FrozenEnv:
             return _spin_sum(self.dm_b)
         return self.dm_b
 
+    def dm_b_total(self):
+        '''rho_B summed over spin. A k-point dm_b is restricted already, and its
+        leading axis is k, so it is returned as it is.'''
+        return self.dm_b if self.kpts is not None else _spin_sum(self.dm_b)
+
     def _nr(self, ni, polarized):
         '''The restricted or unrestricted numint driver, as B requires.'''
         return ni.nr_uks if polarized else ni.nr_rks
@@ -71,7 +82,12 @@ class _FrozenEnv:
         '''J[rho_B] in the shared AO basis.
         '''
         if self._j_b is None:
-            self._j_b = mf.get_j(mol, _spin_sum(self.dm_b), 1)
+            if self.kpts is None:
+                self._j_b = mf.get_j(mol, self.dm_b_total(), 1)
+            else:
+                # Pass kpts explicitly: GPU4PySCF's KSCF.get_j does not fall back
+                # to mf.kpts when kpts is None, unlike PySCF's.
+                self._j_b = mf.get_j(mol, self.dm_b, 1, self.kpts)
         return self._j_b
 
     def e_xc(self, ni, mol, grids, xc, max_memory):
@@ -116,6 +132,7 @@ class _FrozenEnv:
         if self._e_vne_a_rho_b is None:
             if callable(vne_a):
                 vne_a = vne_a()
-            self._e_vne_a_rho_b = _trace_prod_spin(vne_a, self.dm_b)
+            trace = _trace_prod_spin if self.kpts is None else _kweight_trace
+            self._e_vne_a_rho_b = trace(vne_a, self.dm_b)
         return self._e_vne_a_rho_b
 

@@ -3,7 +3,7 @@
 import numpy
 from pyscf import lib
 
-from pyscf.ksced.common import _KSCED
+from pyscf.ksced.common import _KSCED, _is_kscf
 from pyscf.ksced.super.env import _FrozenEnv
 
 
@@ -58,6 +58,9 @@ def _sb_class(mf, env):
     from pyscf.ksced.super import rks as ksced_rks
     from pyscf.ksced.super import pbcrks as ksced_pbcrks
 
+    if _is_kscf(mf):
+        from pyscf.ksced.super import kpbcrks as ksced_kpbcrks
+        return ksced_kpbcrks.KSCEDKPBCRKS
     if _needs_uks_machinery(mf, env):
         if _is_pbc(mf):
             from pyscf.ksced.super import pbcuks as ksced_pbcuks
@@ -86,15 +89,32 @@ def _reject_restricted_open_shell(mf, what):
             'Use UKS.' % what)
 
 
-def _reject_kpts(mf, what):
-    '''KSCED is gamma-point only, and a k-point object must be refused here.
+def _check_kpts(mf, mf_b):
+    '''k-point objects: KRKS only, and A and B on the same k-points.
+
+    A k-point density matrix is (nk, nao, nao). The spin dispatch would read a
+    leading axis of length 2 as alpha/beta, so k-point objects get their own
+    classes, which exist for the restricted case only.
     '''
-    if mf.istype('KSCF'):
-        raise NotImplementedError(
-            'KSCED is gamma-point only: %s is a k-point SCF object (%s). Its '
-            'density matrix carries a k-point axis that the spin dispatch '
-            'would read as alpha/beta. Build the subsystem at the gamma point '
-            'with RKS/UKS instead of KRKS/KUKS.' % (what, type(mf).__name__))
+    ka, kb = _is_kscf(mf), _is_kscf(mf_b)
+    if not (ka or kb):
+        return
+    if ka != kb:
+        raise ValueError(
+            'KSCED: subsystem A is %s and subsystem B is %s. Build both at the '
+            'gamma point (RKS) or both with the same k-points (KRKS).'
+            % (type(mf).__name__, type(mf_b).__name__))
+    for m, what in ((mf, 'subsystem A'), (mf_b, 'subsystem B')):
+        if m.istype('KUHF') or m.istype('KROHF') or m.istype('KGHF'):
+            raise NotImplementedError(
+                'KSCED k-point support is restricted (KRKS) only: %s is %s. '
+                'Use KRKS, or UKS at the gamma point.' % (what, type(m).__name__))
+    kpts_a = numpy.asarray(mf.kpts).reshape(-1, 3)
+    kpts_b = numpy.asarray(mf_b.kpts).reshape(-1, 3)
+    if kpts_a.shape != kpts_b.shape or not numpy.allclose(kpts_a, kpts_b):
+        raise ValueError(
+            'KSCED: subsystems A and B must use the same k-points; A has %d and '
+            'B has %d, or they differ.' % (len(kpts_a), len(kpts_b)))
 
 
 def _looks_supermolecular(mol_a, mol_b):
@@ -227,8 +247,7 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode=None, env=None,
 
     _reject_restricted_open_shell(mf, 'subsystem A')
     _reject_restricted_open_shell(mf_b, 'subsystem B')
-    _reject_kpts(mf, 'subsystem A')
-    _reject_kpts(mf_b, 'subsystem B')
+    _check_kpts(mf, mf_b)
 
     if basis_mode == 'S':
         env = _FrozenEnv(mf_b, dm_b)
@@ -261,7 +280,10 @@ def embed(mf, mf_b, dm_b=None, mol_ab=None, basis_mode=None, env=None,
             mf.mol_ab = env.mol_ab
             return mf
         _check_numint(mf)
-        if _needs_uks_machinery(mf, env):
+        if _is_kscf(mf):
+            from pyscf.ksced.mono import kpbcrks as mb_kpbcrks
+            base = mb_kpbcrks.KSCEDMBKPBCRKS
+        elif _needs_uks_machinery(mf, env):
             if _is_pbc(mf):
                 from pyscf.ksced.mono import pbcuks as mb_pbcuks
                 base = (mb_pbcuks.KSCEDMBPBCUKS if _is_unrestricted(mf)
