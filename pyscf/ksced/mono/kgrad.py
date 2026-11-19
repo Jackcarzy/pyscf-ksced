@@ -54,6 +54,9 @@ def _validate(mf):
     dm_b = to_host(env.dm_b)
     if np.ndim(dm_b) != 3 or dm_b.shape[0] != len(kpts):
         raise ValueError('KSCED k-point gradients require dm_b of shape (nk, nao_b, nao_b)')
+    ni = mf._numint
+    if type(ni).__name__ == 'MultiGridNumInt' and not type(ni).__module__.endswith('multigrid_v2'):
+        raise NotImplementedError('KSCED gradients do not support multigrid v1')
     if getattr(mf, 'disp', None) or getattr(mf, 'nlc', None):
         raise NotImplementedError('KSCED gradients do not include dispersion or nonlocal XC')
     for code in (mf.xc, mf.t_nad):
