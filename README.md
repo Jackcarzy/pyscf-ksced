@@ -117,7 +117,7 @@ Every trace in the energy below becomes a k-point average,
 | `basis_mode="S"` | yes | yes |
 | `basis_mode="M"` | yes | yes |
 | Unrestricted (`UKS` / `KUKS`) | yes | no |
-| Analytic gradients (`basis_mode="M"`) | yes | no |
+| Analytic gradients (`basis_mode="M"`) | yes | yes |
 
 ### Embedded energy
 
@@ -149,7 +149,8 @@ number and fixed `sigma`. This is the energy differentiated by the gradient.
 
 ### Analytic gradients
 
-For molecular and Gamma-point periodic `basis_mode="M"` calculations, the gradient differentiates
+For molecular, Gamma-point periodic and k-point (`KRKS`) periodic `basis_mode="M"`
+calculations, the gradient differentiates
 E_ainb with respect to A's nuclear positions, including the A–B interactions.
 B's atoms, basis and density stay fixed.
 
@@ -171,6 +172,16 @@ components = grad_ainb.components                  # full A gradient by term
 
 scanner_ainb = mf_ainb.nuc_grad_method().as_scanner()
 energy_ainb, gradient_ainb_on_a = scanner_ainb(displaced_mol_a)  # Mole or Cell
+```
+
+With k-points the call is the same; `nuc_grad_method()` returns the k-point
+gradient (`mono/kgrad.py`) for a `KRKS` object, and every A-side trace is the
+k average. A and B must use the same k-points (no k-point symmetry objects).
+
+```python
+mf_ainb = ksced.embed(pbc_dft.KRKS(cell_a, kpts=kpts, xc="PBE"), mf_b, basis_mode="M")
+mf_ainb.kernel()
+gradient_ainb_on_a = mf_ainb.nuc_grad_method().kernel()  # Hartree/Bohr
 ```
 
 ## Package layout
