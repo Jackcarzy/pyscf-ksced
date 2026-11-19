@@ -205,8 +205,8 @@ class KSCEDMixin(_KSCED):
         if not isinstance(self.with_env, _FrozenEnvMB):
             raise NotImplementedError("KSCED gradients require basis_mode='M'")
         if _is_kscf(self):
-            raise NotImplementedError(
-                'KSCED gradients are gamma-point only; this is a k-point object')
+            from pyscf.ksced.mono.kgrad import Gradients
+            return Gradients(self)
         if _is_cell(self.mol):
             from pyscf.ksced.mono.grad import Gradients
         else:
