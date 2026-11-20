@@ -10,11 +10,10 @@ depend on k; only the AO values (and so drho_A/dR) carry the phase exp(ik.r).
 
 import numpy as np
 
-from pyscf import lib
 from pyscf.ksced.arrays import to_host
 from pyscf.ksced.common import _is_kscf
 from pyscf.ksced.mono import grad as gamma_grad
-from pyscf.ksced.mono.grad import _backend, _potential
+from pyscf.ksced.mono.grad import _HESS, _ao_response, _backend, _block_size, _potential
 from pyscf.ksced.mono.meshdata import is_fft_df
 
 
@@ -85,22 +84,6 @@ def _validate(mf):
     mf.energy_potential()  # Check convergence and the finite-temperature contract.
 
 
-def _block_size(mf, xp, ncomp, nk, nao):
-    '''Grid points per block for complex AOs at nk k-points.
-
-    Each point holds ncomp AO components at every k (16 bytes per value), plus
-    about as much again for the products formed from them. On GPU the limit is
-    free device memory (half of it); host memory (max_memory) governs on CPU.
-    '''
-    per_point = 32 * (ncomp + 4) * nk * max(1, nao)
-    if xp is np:
-        memory = max(64, mf.max_memory - lib.current_memory()[0]) * 1e6
-    else:
-        free = xp.cuda.runtime.memGetInfo()[0] + xp.get_default_memory_pool().free_bytes()
-        memory = 0.5 * free
-    return int(max(64, min(32768, memory // per_point)))
-
-
 def _ao_blocks(mf, kpts, deriv):
     '''(p0, p1, [ao_k (ncomp, g, nao) for each k]) over the uniform grid.'''
     xp, ni, _ = _backend(mf)
@@ -127,30 +110,6 @@ def _density(aos, dms, xp):
         rho[0] += xp.einsum('gi,gi->g', ao[0], c).real
         rho[1:] += 2 * xp.einsum('xgi,gi->xg', ao[1:4], c).real
     return rho / nk
-
-
-_HESS = ((4, 5, 6), (5, 7, 8), (6, 8, 9))
-
-
-def _ao_response(ao, dao, w, xp):
-    '''S[axis, i] = sum_g of the AO-i part of (d rho/dR_axis) . w, before the -2/nk factor.
-
-    ao: (10, g, nao) AO values and derivatives at one k; dao[j] = conj((d^j phi D)_i),
-    j = value, x, y, z; w: (4, g) potential for the density and its gradient.
-    Summing S over the AOs of an atom gives that atom's gradient (see _grid_gradient).
-    '''
-    out = xp.empty((3, ao.shape[2]), dtype=np.complex128)
-    gga = bool(xp.any(w[1:] != 0))
-    e = xp.einsum('jgi,jg->gi', dao[1:4], w[1:]) if gga else None
-    for axis in range(3):
-        t = ao[axis + 1] * w[0][:, None]
-        if gga:
-            t = t + xp.einsum('jgi,jg->gi', ao[list(_HESS[axis])], w[1:])
-        s = xp.einsum('gi,gi->i', dao[0], t)
-        if gga:
-            s = s + xp.einsum('gi,gi->i', ao[axis + 1], e)
-        out[axis] = s
-    return out
 
 
 def _grid_gradient(mf, dms, kpts):

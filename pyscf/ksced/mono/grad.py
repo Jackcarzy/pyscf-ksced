@@ -79,17 +79,41 @@ def _validate(mf):
     mf.energy_potential()  # Check convergence and the finite-temperature contract.
 
 
+def _block_size(mf, xp, ncomp, nk, nao, itemsize=16):
+    '''Grid points per block for AOs at nk k-points (itemsize 16 complex, 8 real).
+
+    Each point holds ncomp AO components at every k (itemsize bytes per value), plus
+    about as much again for the products formed from them. On GPU the limit is
+    free device memory (half of it); host memory (max_memory) governs on CPU.
+    '''
+    per_point = 2 * itemsize * (ncomp + 4) * nk * max(1, nao)
+    if xp is np:
+        memory = max(64, mf.max_memory - lib.current_memory()[0]) * 1e6
+    else:
+        free = xp.cuda.runtime.memGetInfo()[0] + xp.get_default_memory_pool().free_bytes()
+        memory = 0.5 * free
+    return int(max(64, min(32768, memory // per_point)))
+
+
 def _ao_blocks(mf, deriv):
     xp, ni, _ = _backend(mf)
     cell = mf.cell
     coords = cell.get_uniform_grids()
-    # Bound AO work arrays, including ten derivative components for GGA.
-    memory = max(16, min(256, mf.max_memory - lib.current_memory()[0])) * 1e6
-    block = max(64, min(8192, int(memory / (8 * 20 * max(1, cell.nao)))))
+    ncomp = (deriv + 1) * (deriv + 2) * (deriv + 3) // 6
+    block = _block_size(mf, xp, ncomp, 1, cell.nao, itemsize=8)
+    if xp is np:
+        def evaluate(c):
+            return ni.eval_ao(cell, c, kpt=np.zeros(3), deriv=deriv)
+    else:
+        # Build GPU4PySCF's AO setup once rather than on every block.
+        kpts = np.zeros((1, 3))
+        opt = ni._GTOvalOpt(cell, kpts, deriv=deriv)
+
+        def evaluate(c):
+            return ni.eval_ao_kpts(cell, c, kpts=kpts, deriv=deriv, opt=opt)[0]
     for p0 in range(0, len(coords), block):
         p1 = min(len(coords), p0 + block)
-        ao = ni.eval_ao(cell, coords[p0:p1], kpt=np.zeros(3), deriv=deriv)
-        yield p0, p1, xp.asarray(ao).real
+        yield p0, p1, xp.asarray(evaluate(coords[p0:p1])).real
 
 
 def _density(ao, dms, xp):
@@ -117,6 +141,30 @@ def _potential(ni, code, rho, polarized, xp):
     return out
 
 
+_HESS = ((4, 5, 6), (5, 7, 8), (6, 8, 9))
+
+
+def _ao_response(ao, dao, w, xp):
+    '''S[axis, i] = sum_g of the AO-i part of (d rho/dR_axis) . w, before the -2/nk factor.
+
+    ao: (10, g, nao) AO values and derivatives (at one k-point, or real at gamma); dao[j] = conj((d^j phi D)_i),
+    j = value, x, y, z; w: (4, g) potential for the density and its gradient.
+    Summing S over the AOs of an atom gives that atom's gradient (see _grid_gradient).
+    '''
+    out = xp.empty((3, ao.shape[2]), dtype=xp.result_type(ao, dao))
+    gga = bool(xp.any(w[1:] != 0))
+    e = xp.einsum('jgi,jg->gi', dao[1:4], w[1:]) if gga else None
+    for axis in range(3):
+        t = ao[axis + 1] * w[0][:, None]
+        if gga:
+            t = t + xp.einsum('jgi,jg->gi', ao[list(_HESS[axis])], w[1:])
+        s = xp.einsum('gi,gi->i', dao[0], t)
+        if gga:
+            s = s + xp.einsum('gi,gi->i', ao[axis + 1], e)
+        out[axis] = s
+    return out
+
+
 def _grid_gradient(mf, dm):
     xp, _, tools = _backend(mf)
     env, cell = mf.with_env, mf.cell
@@ -136,30 +184,28 @@ def _grid_gradient(mf, dm):
     vj = tools.ifft(rho_g * tools.get_coulG(cell, mesh=cell.mesh), cell.mesh).real * weight
     vb = mesh_b.vj()
     vj += xp.asarray(to_host(vb)) if xp is np else xp.asarray(vb)
-    result = {name: xp.zeros((cell.natm, 3)) for name in ('hartree', 'xc', 'kinetic_nad')}
-    hess = ((4, 5, 6), (5, 7, 8), (6, 8, 9))
+    names = ('hartree', 'xc', 'kinetic_nad')
+    acc = {name: xp.zeros((3, cell.nao)) for name in names}
     for p0, p1, ao in _ao_blocks(mf, 2):
         ra = rho_a[..., p0:p1]
         rt = ra + rho_b[..., p0:p1]
         vx = _potential(mf._numint, mf.xc, rt, polarized, xp) * weight
         vt = (_potential(mf._numint, mf.t_nad, rt, polarized, xp)
               - _potential(mf._numint, mf.t_nad, ra, polarized, xp)) * weight
+        wj = xp.zeros((4, p1 - p0))
+        wj[0] = vj[p0:p1]
         for s, d in enumerate(dms):
+            # d/dR phi_mu(r-R) = -d/dr phi_mu. Both AO factors move; the
+            # potentials are contracted per AO first (_ao_response).
             dao = xp.einsum('xgi,ij->xgj', ao[:4], d)
-            for atom, (_, _, a0, a1) in enumerate(cell.aoslice_by_atom()):
-                for axis in range(3):
-                    # d/dR phi_mu(r-R) = -d/dr phi_mu. Both AO factors move.
-                    drho = xp.empty((4, p1 - p0))
-                    grad = ao[axis + 1, :, a0:a1]
-                    drho[0] = -2 * xp.einsum('gi,gi->g', grad, dao[0, :, a0:a1])
-                    for k in range(3):
-                        drho[k + 1] = -2 * (
-                            xp.einsum('gi,gi->g', ao[hess[axis][k], :, a0:a1], dao[0, :, a0:a1])
-                            + xp.einsum('gi,gi->g', grad, dao[k + 1, :, a0:a1]))
-                    result['hartree'][atom, axis] += drho[0].dot(vj[p0:p1])
-                    result['xc'][atom, axis] += xp.einsum('xg,xg->', drho, vx[s])
-                    result['kinetic_nad'][atom, axis] += xp.einsum('xg,xg->', drho, vt[s])
-    return {k: to_host(v) for k, v in result.items()}
+            acc['hartree'] += _ao_response(ao, dao, wj, xp)
+            acc['xc'] += _ao_response(ao, dao, vx[s], xp)
+            acc['kinetic_nad'] += _ao_response(ao, dao, vt[s], xp)
+    owner = np.zeros((cell.nao, cell.natm))
+    for atom, (_, _, a0, a1) in enumerate(cell.aoslice_by_atom()):
+        owner[a0:a1, atom] = 1
+    owner = xp.asarray(owner)
+    return {name: to_host(-2 * acc[name].dot(owner).T) for name in names}
 
 
 def _contract_ip(cell, integral, dm):
