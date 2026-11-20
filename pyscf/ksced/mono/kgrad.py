@@ -85,16 +85,29 @@ def _validate(mf):
     mf.energy_potential()  # Check convergence and the finite-temperature contract.
 
 
+def _block_size(mf, xp, ncomp, nk, nao):
+    '''Grid points per block for complex AOs at nk k-points.
+
+    Each point holds ncomp AO components at every k (16 bytes per value), plus
+    about as much again for the products formed from them. On GPU the limit is
+    free device memory (half of it); host memory (max_memory) governs on CPU.
+    '''
+    per_point = 32 * (ncomp + 4) * nk * max(1, nao)
+    if xp is np:
+        memory = max(64, mf.max_memory - lib.current_memory()[0]) * 1e6
+    else:
+        free = xp.cuda.runtime.memGetInfo()[0] + xp.get_default_memory_pool().free_bytes()
+        memory = 0.5 * free
+    return int(max(64, min(32768, memory // per_point)))
+
+
 def _ao_blocks(mf, kpts, deriv):
     '''(p0, p1, [ao_k (ncomp, g, nao) for each k]) over the uniform grid.'''
     xp, ni, _ = _backend(mf)
     cell = mf.cell
     coords = cell.get_uniform_grids()
     ncomp = (deriv + 1) * (deriv + 2) * (deriv + 3) // 6
-    # Complex AOs at every k-point (16 bytes per value), plus about as much
-    # again for the products formed from them in one block.
-    memory = max(64, mf.max_memory - lib.current_memory()[0]) * 1e6
-    block = max(64, min(16384, int(memory / (32 * (ncomp + 4) * len(kpts) * max(1, cell.nao)))))
+    block = _block_size(mf, xp, ncomp, len(kpts), cell.nao)
     kwargs = {}
     if xp is not np:
         # Build GPU4PySCF's k-point AO setup once rather than on every block.
