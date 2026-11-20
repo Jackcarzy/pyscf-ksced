@@ -91,12 +91,17 @@ def _ao_blocks(mf, kpts, deriv):
     cell = mf.cell
     coords = cell.get_uniform_grids()
     ncomp = (deriv + 1) * (deriv + 2) * (deriv + 3) // 6
-    # Complex AOs at every k-point: 16 bytes per value.
-    memory = max(16, min(256, mf.max_memory - lib.current_memory()[0])) * 1e6
-    block = max(64, min(8192, int(memory / (16 * (ncomp + 2) * len(kpts) * max(1, cell.nao)))))
+    # Complex AOs at every k-point (16 bytes per value), plus about as much
+    # again for the products formed from them in one block.
+    memory = max(64, mf.max_memory - lib.current_memory()[0]) * 1e6
+    block = max(64, min(16384, int(memory / (32 * (ncomp + 4) * len(kpts) * max(1, cell.nao)))))
+    kwargs = {}
+    if xp is not np:
+        # Build GPU4PySCF's k-point AO setup once rather than on every block.
+        kwargs['opt'] = ni._GTOvalOpt(cell, kpts, deriv=deriv)
     for p0 in range(0, len(coords), block):
         p1 = min(len(coords), p0 + block)
-        ao = ni.eval_ao_kpts(cell, coords[p0:p1], kpts=kpts, deriv=deriv)
+        ao = ni.eval_ao_kpts(cell, coords[p0:p1], kpts=kpts, deriv=deriv, **kwargs)
         yield p0, p1, [xp.asarray(a) for a in ao]
 
 
@@ -111,7 +116,40 @@ def _density(aos, dms, xp):
     return rho / nk
 
 
+_HESS = ((4, 5, 6), (5, 7, 8), (6, 8, 9))
+
+
+def _ao_response(ao, dao, w, xp):
+    '''S[axis, i] = sum_g of the AO-i part of (d rho/dR_axis) . w, before the -2/nk factor.
+
+    ao: (10, g, nao) AO values and derivatives at one k; dao[j] = conj((d^j phi D)_i),
+    j = value, x, y, z; w: (4, g) potential for the density and its gradient.
+    Summing S over the AOs of an atom gives that atom's gradient (see _grid_gradient).
+    '''
+    out = xp.empty((3, ao.shape[2]), dtype=np.complex128)
+    gga = bool(xp.any(w[1:] != 0))
+    e = xp.einsum('jgi,jg->gi', dao[1:4], w[1:]) if gga else None
+    for axis in range(3):
+        t = ao[axis + 1] * w[0][:, None]
+        if gga:
+            t = t + xp.einsum('jgi,jg->gi', ao[list(_HESS[axis])], w[1:])
+        s = xp.einsum('gi,gi->i', dao[0], t)
+        if gga:
+            s = s + xp.einsum('gi,gi->i', ao[axis + 1], e)
+        out[axis] = s
+    return out
+
+
 def _grid_gradient(mf, dms, kpts):
+    '''Hartree, XC and T_nad mesh terms.
+
+    For each atom a and axis x,
+        dE/dR_ax = sum_g sum_j d rho_j(g)/dR_ax w_j(g),
+        d rho_0/dR_ax = -(2/nk) Re sum_k sum_{i in a} d_x phi_ki conj((phi_k D_k)_i),
+    and the gradient components d rho_j likewise with the Hessian terms. The
+    potentials are contracted per AO first (_ao_response), and the AOs are
+    summed into atoms once, at the end.
+    '''
     xp, _, tools = _backend(mf)
     env, cell = mf.with_env, mf.cell
     nk = len(kpts)
@@ -127,34 +165,26 @@ def _grid_gradient(mf, dms, kpts):
     vj = tools.ifft(rho_g * tools.get_coulG(cell, mesh=cell.mesh), cell.mesh).real * weight
     vb = mesh_b.vj()
     vj += xp.asarray(to_host(vb)) if xp is np else xp.asarray(vb)
-    result = {name: xp.zeros((cell.natm, 3)) for name in ('hartree', 'xc', 'kinetic_nad')}
-    hess = ((4, 5, 6), (5, 7, 8), (6, 8, 9))
-    slices = cell.aoslice_by_atom()
+    names = ('hartree', 'xc', 'kinetic_nad')
+    acc = {name: xp.zeros((3, cell.nao), dtype=np.complex128) for name in names}
     for p0, p1, aos in _ao_blocks(mf, kpts, 2):
         ra = rho_a[None, :, p0:p1]
         rt = ra + rho_b[None, :, p0:p1]
-        vx = _potential(mf._numint, mf.xc, rt, False, xp)[0] * weight
-        vt = (_potential(mf._numint, mf.t_nad, rt, False, xp)
+        wj = xp.zeros((4, p1 - p0))
+        wj[0] = vj[p0:p1]
+        wx = _potential(mf._numint, mf.xc, rt, False, xp)[0] * weight
+        wt = (_potential(mf._numint, mf.t_nad, rt, False, xp)
               - _potential(mf._numint, mf.t_nad, ra, False, xp))[0] * weight
-        drho = xp.zeros((cell.natm, 3, 4, p1 - p0))
         for ao, d in zip(aos, dms):
-            # conj((d^j phi_k D_k)_i) for j = value, x, y, z.
             dao = xp.einsum('xgi,ij->xgj', ao[:4], d).conj()
-            for atom, (_, _, a0, a1) in enumerate(slices):
-                for axis in range(3):
-                    # d/dR phi_mu(r-R) = -d/dr phi_mu. Both AO factors move.
-                    grad = ao[axis + 1, :, a0:a1]
-                    drho[atom, axis, 0] -= 2 * xp.einsum(
-                        'gi,gi->g', grad, dao[0, :, a0:a1]).real
-                    for k in range(3):
-                        drho[atom, axis, k + 1] -= 2 * (
-                            xp.einsum('gi,gi->g', ao[hess[axis][k], :, a0:a1], dao[0, :, a0:a1])
-                            + xp.einsum('gi,gi->g', grad, dao[k + 1, :, a0:a1])).real
-        drho /= nk
-        result['hartree'] += xp.einsum('ang,g->an', drho[:, :, 0], vj[p0:p1])
-        result['xc'] += xp.einsum('anxg,xg->an', drho, vx)
-        result['kinetic_nad'] += xp.einsum('anxg,xg->an', drho, vt)
-    return {k: to_host(v) for k, v in result.items()}
+            acc['hartree'] += _ao_response(ao, dao, wj, xp)
+            acc['xc'] += _ao_response(ao, dao, wx, xp)
+            acc['kinetic_nad'] += _ao_response(ao, dao, wt, xp)
+    owner = np.zeros((cell.nao, cell.natm))
+    for atom, (_, _, a0, a1) in enumerate(cell.aoslice_by_atom()):
+        owner[a0:a1, atom] = 1
+    owner = xp.asarray(owner)
+    return {name: to_host(-2 / nk * acc[name].real.dot(owner).T) for name in names}
 
 
 def _contract_ip(cell, integrals, dms):
